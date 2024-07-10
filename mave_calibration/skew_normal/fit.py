@@ -5,7 +5,9 @@ def fit_skew_normal(X):
     """
     Fit a skew normal distribution to the data.
     """
-    # Fit a skew normal distribution to the data
+    return list(map(float,sps.skewnorm.fit(X)))
+    
+def method_of_moments(X):
     params = [0,0,0]
 
     m1 = np.mean(X)
