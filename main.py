@@ -185,7 +185,7 @@ def draw_evidence_figure(X, S, weights, component_params):
     layer_evidence(ax, prior)
     ax.set_yscale("log")
     ax.set_xlabel("Assay Score")
-    _ = ax.set_ylabel(r"$\log \text{LR}^+ $")
+    _ = ax.set_ylabel(r"$\text{LR}^+ $")
     return fig, ax
 
 

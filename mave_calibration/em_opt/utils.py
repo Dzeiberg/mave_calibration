@@ -346,11 +346,11 @@ def sample_specific_responsibilities(
     return responsibilities
 
 
-def validate_indicators(I):
-    assert I.ndim == 2
-    assert (I.sum(1) == 1).all()
-    assert np.isin(I, [0, 1]).all()
-    return I.astype(bool)
+def validate_indicators(Indicators):
+    assert Indicators.ndim == 2
+    assert (Indicators.sum(1) == 1).all()
+    assert np.isin(Indicators, [0, 1]).all()
+    return Indicators.astype(bool)
 
 
 def get_location_update(observations, responsibilities, component_params):
