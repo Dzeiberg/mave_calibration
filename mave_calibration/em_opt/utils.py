@@ -1,6 +1,8 @@
 import scipy.stats as sps
 import numpy as np
 from mave_calibration.skew_normal import density_utils
+from mave_calibration.em_opt.constraints import density_constraint_violated, weighted_density_constraint_violated
+
 
 def trunc_norm_moments(mu, sigma):
     """Array trunc norm moments"""
@@ -12,18 +14,22 @@ def trunc_norm_moments(mu, sigma):
     p[flags] = abs(mu[flags] / sigma)
 
     m1 = mu + sigma * p
-    m2 = mu ** 2 + sigma ** 2 + sigma * mu * p
+    m2 = mu**2 + sigma**2 + sigma * mu * p
     return m1, m2
+
 
 def get_truncated_normal_moments(observations, component_params):
     _delta = density_utils._get_delta(component_params)
-    loc,scale = component_params[1:]
+    loc, scale = component_params[1:]
     truncated_normal_loc = _delta / scale * (observations - loc)
     truncated_normal_scale = np.sqrt(1 - _delta**2)
-    v,w = trunc_norm_moments(truncated_normal_loc, truncated_normal_scale)
-    return v,w
+    v, w = trunc_norm_moments(truncated_normal_loc, truncated_normal_scale)
+    return v, w
 
-def em_iteration(observations, sample_indicators, current_component_params, current_weights):
+
+def em_iteration(
+    observations, sample_indicators, current_component_params, current_weights
+):
     """
     Perform one iteration of the EM algorithm
 
@@ -37,37 +43,283 @@ def em_iteration(observations, sample_indicators, current_component_params, curr
     updated_component_params: list of tuples : [(a, loc, scale)_1, ..., (a, loc, scale)_K] : updated skewness, location, scale parameters of each component
     updated_weights: np.array (S, K) : updated weights of each component for each sample
     """
-    N,S = sample_indicators.shape
+    N, S = sample_indicators.shape
     K = len(current_component_params)
     assert current_weights.shape == (S, K)
     sample_indicators = validate_indicators(sample_indicators)
     assert sample_indicators.shape == (N, S)
-    responsibilities = sample_specific_responsibilities(observations, sample_indicators, current_component_params, current_weights)
+    responsibilities = sample_specific_responsibilities(
+        observations, sample_indicators, current_component_params, current_weights
+    )
     updated_component_params = []
-    for i,curr_comp_params in enumerate(current_component_params): # for each component
-        updated_loc = get_location_update(observations, responsibilities[i], curr_comp_params)
-        updated_Delta = get_Delta_update(updated_loc, observations, responsibilities[i], curr_comp_params)
-        updated_Gamma = get_Gamma_update(updated_loc, updated_Delta, observations, responsibilities[i], curr_comp_params)
-        updated_component_params.append(density_utils.alternate_to_canonical(updated_loc, updated_Delta, updated_Gamma))
-    updated_weights = get_sample_weights(observations, sample_indicators, updated_component_params, current_weights)
+    for i, curr_comp_params in enumerate(
+        current_component_params
+    ):  # for each component
+        updated_loc = get_location_update(
+            observations, responsibilities[i], curr_comp_params
+        )
+        updated_Delta = get_Delta_update(
+            updated_loc, observations, responsibilities[i], curr_comp_params
+        )
+        updated_Gamma = get_Gamma_update(
+            updated_loc,
+            updated_Delta,
+            observations,
+            responsibilities[i],
+            curr_comp_params,
+        )
+        updated_component_params.append(
+            density_utils.alternate_to_canonical(
+                updated_loc, updated_Delta, updated_Gamma
+            )
+        )
+    updated_weights = get_sample_weights(
+        observations, sample_indicators, updated_component_params, current_weights
+    )
     return updated_component_params, updated_weights
 
-def get_sample_weights(observations, sample_indicators, updated_component_params, current_weights):
+
+def binary_search(
+    candidate_value, current_params, component_index, parameter_index, xlims
+):
+    """
+    Perform a binary search to find the value of the parameter that satisfies the density constraint
+
+    Arguments:
+    candidate_value: float : candidate value of the parameter ** IN ALTERNATE PARAMETERIZATION **
+    current_params: list [tuple : (a, loc, scale) ]: skewness, location, scale parameters of the two components
+    component_index: int : index of the component to update
+    parameter_index: int : index of the parameter to update
+    xlims: tuple : (xmin, xmax) : range of x values to check the density ratio
+
+    Returns:
+    float : updated parameter value
+    """
+    current_alternate_params = [
+        list(density_utils.canonical_to_alternate(*param)) for param in current_params
+    ]
+    lower_bound = current_alternate_params[component_index][parameter_index]
+    upper_bound = candidate_value
+    while abs(upper_bound - lower_bound) > 1e-4:
+        midpoint = (upper_bound + lower_bound) / 2
+        updated_params = current_alternate_params.copy()
+        updated_params[component_index][parameter_index] = midpoint
+        if density_constraint_violated(
+            density_utils.alternate_to_canonical(*updated_params[0]),
+            density_utils.alternate_to_canonical(*updated_params[1]),
+            xlims,
+        ):
+            upper_bound = midpoint
+        else:
+            lower_bound = midpoint
+    return lower_bound
+
+def weighted_binary_search(
+    candidate_value, current_params, current_weights, component_index, parameter_index, xlims
+):
+    """
+    Perform a binary search to find the value of the parameter that satisfies the density constraint
+
+    Arguments:
+    candidate_value: float : candidate value of the parameter ** IN ALTERNATE PARAMETERIZATION **
+    current_params: list [tuple : (a, loc, scale) ]: skewness, location, scale parameters of the two components
+    component_index: int : index of the component to update
+    parameter_index: int : index of the parameter to update
+    xlims: tuple : (xmin, xmax) : range of x values to check the density ratio
+
+    Returns:
+    float : updated parameter value
+    """
+    current_alternate_params = [
+        list(density_utils.canonical_to_alternate(*param)) for param in current_params
+    ]
+    proposal = current_alternate_params.copy()
+    proposal[component_index][parameter_index] = candidate_value
+    if not weighted_density_constraint_violated(
+        list(map(lambda p: density_utils.alternate_to_canonical(*p), proposal)),
+        current_weights,
+        xlims,
+    ):
+        return candidate_value
+    lower_bound = current_alternate_params[component_index][parameter_index]
+    upper_bound = candidate_value
+    while abs(upper_bound - lower_bound) > 1e-4:
+        midpoint = (upper_bound + lower_bound) / 2
+        updated_params = current_alternate_params.copy()
+        updated_params[component_index][parameter_index] = midpoint
+        if weighted_density_constraint_violated(
+            list(map(lambda p: density_utils.alternate_to_canonical(*p), updated_params)),
+            current_weights,
+            xlims,
+        ):
+            upper_bound = midpoint
+        else:
+            lower_bound = midpoint
+    return lower_bound
+
+
+
+def constrained_em_iteration(
+    observations, sample_indicators, current_component_params, current_weights, xlims
+):
+    """
+    Perform one iteration of the EM algorithm with the density constraint
+
+    Arguments:
+    observations: np.array (N,) : observed instances
+    sample_indicators: np.array (N, S) : indicator matrix of which sample each observation belongs to
+    current_component_params: list of tuples : [(a, loc, scale)_1, ..., (a, loc, scale)_K] : skewness, location, scale parameters of each component
+    current_weights: np.array (S, K) : weights of each component for each sample
+    xlims: tuple : (xmin, xmax) : range of x values to check the density ratio
+
+    Returns:
+    updated_component_params: list of tuples : [(a, loc, scale)_1, ..., (a, loc, scale)_K] : updated skewness, location, scale parameters of each component
+    updated_weights: np.array (S, K) : updated weights of each component for each sample
+    """
+    N, S = sample_indicators.shape
+    K = len(current_component_params)
+    assert K == 2
+    assert current_weights.shape == (S, K)
+    sample_indicators = validate_indicators(sample_indicators)
+    assert sample_indicators.shape == (N, S)
+    responsibilities = sample_specific_responsibilities(
+        observations, sample_indicators, current_component_params, current_weights
+    )
+    updated_component_params = [None, None]
+    # for component_num, curr_comp_params in enumerate(
+    #     current_component_params
+    # ):  # for each component
+    for component_num in np.random.choice([0, 1], size=2, replace=False):
+        curr_comp_params = current_component_params[component_num]
+        updated_loc = get_location_update(
+            observations, responsibilities[component_num], curr_comp_params
+        )
+        constrained_updated_loc = binary_search(
+            updated_loc, current_component_params, component_num, 0, xlims
+        )
+        updated_Delta = get_Delta_update(
+            constrained_updated_loc,
+            observations,
+            responsibilities[component_num],
+            curr_comp_params,
+        )
+        constrained_updated_Delta = binary_search(
+            updated_Delta, current_component_params, component_num, 1, xlims
+        )
+        updated_Gamma = get_Gamma_update(
+            constrained_updated_loc,
+            constrained_updated_Delta,
+            observations,
+            responsibilities[component_num],
+            curr_comp_params,
+        )
+        constrained_updated_Gamma = binary_search(
+            updated_Gamma, current_component_params, component_num, 2, xlims
+        )
+        updated_component_params[component_num] = density_utils.alternate_to_canonical(
+            constrained_updated_loc,
+            constrained_updated_Delta,
+            constrained_updated_Gamma,
+        )
+    updated_weights = get_sample_weights(
+        observations, sample_indicators, updated_component_params, current_weights
+    )
+    return updated_component_params, updated_weights
+
+def weighted_constrained_em_iteration(
+    observations, sample_indicators, current_component_params, current_weights, xlims
+):
+    """
+    Perform one iteration of the EM algorithm with the density constraint
+
+    Arguments:
+    observations: np.array (N,) : observed instances
+    sample_indicators: np.array (N, S) : indicator matrix of which sample each observation belongs to
+    current_component_params: list of tuples : [(a, loc, scale)_1, ..., (a, loc, scale)_K] : skewness, location, scale parameters of each component
+    current_weights: np.array (S, K) : weights of each component for each sample
+    xlims: tuple : (xmin, xmax) : range of x values to check the density ratio
+
+    Returns:
+    updated_component_params: list of tuples : [(a, loc, scale)_1, ..., (a, loc, scale)_K] : updated skewness, location, scale parameters of each component
+    updated_weights: np.array (S, K) : updated weights of each component for each sample
+    """
+    N, S = sample_indicators.shape
+    K = len(current_component_params)
+    assert K == 2
+    assert current_weights.shape == (S, K)
+    sample_indicators = validate_indicators(sample_indicators)
+    assert sample_indicators.shape == (N, S)
+    responsibilities = sample_specific_responsibilities(
+        observations, sample_indicators, current_component_params, current_weights
+    )
+    updated_component_params = [None, None]
+    # for component_num, curr_comp_params in enumerate(
+    #     current_component_params
+    # ):  # for each component
+    for component_num in np.random.choice([0, 1], size=2, replace=False):
+        curr_comp_params = current_component_params[component_num]
+        updated_loc = get_location_update(
+            observations, responsibilities[component_num], curr_comp_params
+        )
+        constrained_updated_loc = weighted_binary_search(
+            updated_loc, current_component_params, current_weights, component_num, 0, xlims
+        )
+        updated_Delta = get_Delta_update(
+            constrained_updated_loc,
+            observations,
+            responsibilities[component_num],
+            curr_comp_params,
+        )
+        constrained_updated_Delta = weighted_binary_search(
+            updated_Delta, current_component_params,current_weights, component_num, 1, xlims
+        )
+        updated_Gamma = get_Gamma_update(
+            constrained_updated_loc,
+            constrained_updated_Delta,
+            observations,
+            responsibilities[component_num],
+            curr_comp_params,
+        )
+        constrained_updated_Gamma = weighted_binary_search(
+            updated_Gamma, current_component_params,current_weights, component_num, 2, xlims
+        )
+        updated_component_params[component_num] = density_utils.alternate_to_canonical(
+            constrained_updated_loc,
+            constrained_updated_Delta,
+            constrained_updated_Gamma,
+        )
+    updated_weights = get_sample_weights(
+        observations, sample_indicators, updated_component_params, current_weights
+    )
+    return updated_component_params, updated_weights
+
+
+def get_sample_weights(
+    observations, sample_indicators, updated_component_params, current_weights
+):
     updated_weights = np.zeros_like(current_weights)
-    for i in range(current_weights.shape[0]): # for each sample
-        sample_observations = observations[sample_indicators[:,i]]
-        updated_weights[i] = density_utils.component_posteriors(sample_observations, updated_component_params, current_weights[i]).mean(1)
+    for i in range(current_weights.shape[0]):  # for each sample
+        sample_observations = observations[sample_indicators[:, i]]
+        updated_weights[i] = density_utils.component_posteriors(
+            sample_observations, updated_component_params, current_weights[i]
+        ).mean(1)
     return updated_weights
 
+
 def get_likelihood(observations, sample_indicators, component_params, weights):
-    Likelihood = 0.
-    for sample_num,sample_mask in enumerate(sample_indicators.T):
+    Likelihood = 0.0
+    for sample_num, sample_mask in enumerate(sample_indicators.T):
         X = observations[sample_mask]
-        sample_likelihood = density_utils.joint_densities(X, component_params, weights[sample_num]).sum(axis=0)
+        sample_likelihood = density_utils.joint_densities(
+            X, component_params, weights[sample_num]
+        ).sum(axis=0)
         Likelihood += np.log(sample_likelihood).sum().item()
     return Likelihood
 
-def sample_specific_responsibilities(observations , sample_indicators , component_params, weights):
+
+def sample_specific_responsibilities(
+    observations, sample_indicators, component_params, weights
+):
     """
     For each observation calculate the posteriors with respect to each component and that observation's sample's component weights
 
@@ -86,9 +338,11 @@ def sample_specific_responsibilities(observations , sample_indicators , componen
     assert weights.shape == (N_samples, N_components)
 
     responsibilities = np.zeros((N_components, N_observations))
-    for i,sample_mask in enumerate(sample_indicators.T):
+    for i, sample_mask in enumerate(sample_indicators.T):
         X = observations[sample_mask]
-        responsibilities[:, sample_mask] = density_utils.component_posteriors(X, component_params, weights[i])
+        responsibilities[:, sample_mask] = density_utils.component_posteriors(
+            X, component_params, weights[i]
+        )
     return responsibilities
 
 
@@ -112,8 +366,8 @@ def get_location_update(observations, responsibilities, component_params):
     updated_loc: float : updated location parameter
     """
     assert observations.shape == responsibilities.shape
-    v,w = get_truncated_normal_moments(observations, component_params)
-    (_,Delta, Gamma) = density_utils.canonical_to_alternate(*component_params)
+    v, w = get_truncated_normal_moments(observations, component_params)
+    (_, Delta, Gamma) = density_utils.canonical_to_alternate(*component_params)
     m = observations - v * Delta
     return (m * responsibilities).sum() / responsibilities.sum()
 
@@ -133,11 +387,14 @@ def get_Delta_update(updated_loc, observations, responsibilities, component_para
     """
 
     assert observations.shape == responsibilities.shape
-    v,w = get_truncated_normal_moments(observations, component_params)
+    v, w = get_truncated_normal_moments(observations, component_params)
     d = v * (observations - updated_loc)
     return (d * responsibilities).sum() / responsibilities.sum()
 
-def get_Gamma_update(updated_loc, updated_Delta, observations, responsibilities, component_params):
+
+def get_Gamma_update(
+    updated_loc, updated_Delta, observations, responsibilities, component_params
+):
     """
     Calculate the Gamma update for the given component
 
@@ -152,8 +409,10 @@ def get_Gamma_update(updated_loc, updated_Delta, observations, responsibilities,
     updated_Gamma: float : updated Gamma parameter
     """
     assert observations.shape == responsibilities.shape
-    v,w = get_truncated_normal_moments(observations, component_params)
-    g = (observations - updated_loc)**2  - \
-        (2 * updated_Delta * v * (observations - updated_loc)) + \
-            (updated_Delta**2 * w)
+    v, w = get_truncated_normal_moments(observations, component_params)
+    g = (
+        (observations - updated_loc) ** 2
+        - (2 * updated_Delta * v * (observations - updated_loc))
+        + (updated_Delta**2 * w)
+    )
     return (g * responsibilities).sum() / responsibilities.sum()
