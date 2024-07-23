@@ -18,7 +18,7 @@ def density_constraint_violated(params_1, params_2, xlims):
     log_pdf_1 = sps.skewnorm.logpdf(np.linspace(*xlims, 1000), *params_1)
     log_pdf_2 = sps.skewnorm.logpdf(np.linspace(*xlims, 1000), *params_2)
 
-    return not np.all(np.diff(log_pdf_1 - log_pdf_2) < .01)
+    return not np.all(np.diff(log_pdf_1 - log_pdf_2) < 0)
 
 
 def weighted_density_constraint_violated(params, weights, xlims):

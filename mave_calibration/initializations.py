@@ -4,6 +4,7 @@ from mave_calibration.em_opt.constraints import density_constraint_violated
 from sklearn.mixture import GaussianMixture
 from sklearn.cluster import KMeans
 import numpy as np
+from tqdm import trange
 
 def fit_gmm(X,**kwargs):
     """
@@ -60,7 +61,11 @@ def constrained_gmm_init(X, **kwargs):
     gmm_component_responsibilities = get_gmm_responsibilities(X, **kwargs)
     best_parameters = []
     BestLL = -1e10
-    for rep in range(n_inits):
+    if kwargs.get('verbose',True):
+        _range = trange(n_inits,leave=False)
+    else:
+        _range = range(n_inits)
+    for rep in _range:
         component_parameters = []
         comp_weights = np.zeros(n_components)
         for i in range(n_components):
@@ -69,19 +74,26 @@ def constrained_gmm_init(X, **kwargs):
 
             params = fit_skew_normal(X_component)
             component_parameters.append(params)
-        for _ in range(100):
+        for _ in range(10000):
             if not density_constraint_violated(
                 component_parameters[0], component_parameters[1], (X.min(), X.max())
             ):
                 break
             larger_comp_index = np.argmax([p[2] for p in component_parameters])
-            component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0],
+            component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * .99,
                                                         component_parameters[larger_comp_index][1],
                                                         component_parameters[larger_comp_index][2] * .99]
+        if density_constraint_violated(
+            component_parameters[0], component_parameters[1], (X.min(), X.max())
+        ):
+            print(f"init {i} failed")
+            continue
         LL = get_LL(X, component_parameters, comp_weights)
         if LL > BestLL:
             best_parameters = component_parameters
             BestLL = LL
+    if not len(best_parameters):
+        raise ValueError("Could not initialize to satisfy density constraint")
     return best_parameters
     
 
