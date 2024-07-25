@@ -1,0 +1,18 @@
+{
+    "splice_ai": {
+        "spliceAIFilePath" : "/mnt/d/spliceAI/genome_scores_v1.3_ds.20a701bc58ab45b59de2576db79ac8d0/spliceai_scores.raw.snv.hg38.vcf.gz"
+    },
+    "clinvar": {
+        "cache_dir" : "/mnt/d/mave_calibration/cache/",
+        "year" : "2024",
+        "month" : "07"
+    },
+    "gnomad": {
+        "gnomad_vcf_root": "/mnt/i/bio/gnomad/release/4.1/vcf/"
+    },
+    "external_tools" : {
+        "java" : "/usr/bin/java",
+        "gatk" : "/home/dz/utils/gatk-4.4.0.0/gatk",
+        "picard_filepath": "/home/dz/picard/build/libs/picard.jar"
+    }
+}

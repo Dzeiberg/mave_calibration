@@ -15,6 +15,11 @@ matplotlib = "^3.9.1"
 seaborn = "^0.13.2"
 tqdm = "^4.66.4"
 fire = "^0.6.0"
+biopython = "^1.84"
+requests = "^2.32.3"
+openpyxl = "^3.1.5"
+mavehgvs = {git = "https://github.com/VariantEffect/mavehgvs.git"}
+swifter = "^1.4.0"
 
 
 [tool.poetry.group.dev.dependencies]
