@@ -3,6 +3,7 @@ from mave_calibration.skew_normal import density_utils
 from mave_calibration.evidence_thresholds import get_tavtigian_constant
 
 import matplotlib.pyplot as plt
+import scipy.stats as sp
 import seaborn as sns
 import numpy as np
 from mave_calibration.em_opt.utils import get_sample_weights,constrained_em_iteration,em_iteration,get_likelihood
@@ -14,20 +15,57 @@ import os
 from pathlib import Path
 from fire import Fire
 from joblib import Parallel, delayed
+from sklearn.metrics import roc_auc_score
+from joblib import Parallel, delayed
 
-def plot(X, S, sample_names, current_weights, current_params):
-    cmap = sns.color_palette("pastel", 3)
+
+def draw_sample(params,weights,N=1):
+    samples = []
+    for i in range(N):
+        k = np.random.binomial(1,weights[1])
+        samples.append(sp.skewnorm.rvs(*params[k]))
+    return np.array(samples)
+
+def auc_from_samples(x1,x2):
+    return roc_auc_score(np.concatenate((np.zeros(x1.shape[0]),np.ones(x2.shape[0]))),np.concatenate((x1,x2)))
+
+def bootstrap_sample(x):
+    return np.random.choice(x, size=x.shape[0], replace=True)
+
+def empirical_iteration(sample_observations, params, weights):
+    return auc_from_samples(bootstrap_sample(sample_observations),
+                          draw_sample(params, weights,
+                                      N=len(sample_observations)))
+
+def null_iteration(sample_observations):
+    return auc_from_samples(bootstrap_sample(sample_observations),
+                          bootstrap_sample(sample_observations))
+
+def plot(X, S, sample_names, current_weights, current_params, **kwargs):
     N_samples = S.shape[1]
-    fig,ax = plt.subplots(N_samples,1,figsize=(10,10),sharex=True,sharey=True)
+    cmap = sns.color_palette("pastel", N_samples)
+    fig,ax = plt.subplots(N_samples,1,**kwargs)
+    try:
+        ax[0]
+    except TypeError:
+        ax = [ax,]
+    sample_name_map = dict(p_lp="Pathogenic/Likely Pathogenic",
+                           b_lb="Benign/Likely Benign",
+                           vus="VUS",
+                           gnomad='gnomAD',
+                           synonymous='Synonymous',
+                           nonsynonymous='Nonsynonymous',)
     for sample_num in range(N_samples):
-        sns.histplot(X[S[:,sample_num]], ax=ax[sample_num],color=cmap[sample_num] ,stat='density')
+        sns.histplot(X[S[:,sample_num]], ax=ax[sample_num],color=cmap[sample_num] ,stat='density',label=f"n={S[:,sample_num].sum():,d}")
         ax[sample_num].spines['top'].set_visible(False)
         ax[sample_num].spines['right'].set_visible(False)
         ax[sample_num].spines['bottom'].set_visible(False)
         ax[sample_num].spines['left'].set_visible(False)
         ax[sample_num].set_ylabel("")
         ax[sample_num].set_yticks(())
-        ax[sample_num].set_title(f"{sample_names[sample_num].replace('_',' ')} Variants".title())
+        ax[sample_num].legend()
+        ax[sample_num].set_title(f"{sample_name_map[sample_names[sample_num]]}".title())
+        # ax[sample_num].set_title(f"{sample_names[sample_num].replace('_',' ')} Variants".title())
     layer_distributions(X, S, current_weights, current_params, ax, label='estimated')
     return fig,ax
 
@@ -54,22 +92,21 @@ def load_data(**kwargs):
     
     data_directory -- the path to the data directory
     dataset_id -- the id of the dataset, i.e. the directory name within the data directory
-    config_name -- the name of the configuration file to load; e.g. missense_config, gnomad_config, etc.
 
     Returns:
     X -- the assay scores (N,)
     S -- the sample matrix (N,S)
     """
     dataset_id = kwargs.get("dataset_id")
-    config_name = kwargs.get("config_name")
     data_directory = kwargs.get("data_directory")
     data = joblib.load(os.path.join(data_directory, dataset_id, "observations.pkl"))
-    with open(os.path.join(data_directory, f"{dataset_id}/{config_name}.json")) as f:
+    with open(os.path.join(data_directory, "dataset_configs.json")) as f:
         config = json.load(f)
 
-    sample_names = list(config["sample_definitions"].keys())
+    sample_names = list(config["sample_names"])
     X = np.zeros((0,))
     S = np.zeros((0, len(sample_names)), dtype=bool)
+    returned_samples = []
     for i, sample_name in enumerate(sample_names):
         if not len(data[sample_name]):
             continue
@@ -77,9 +114,11 @@ def load_data(**kwargs):
         si = np.zeros((data[sample_name].shape[0], len(sample_names)), dtype=bool)
         si[:, i] = True
         S = np.concatenate((S, si))
-    if config["invert_scores"]:
+        returned_samples.append(sample_name)
+    if config[dataset_id]["invert"]:
         X = -X
-    return X, S,sample_names
+    S = S[:,S.sum(0) > 0]
+    return X, S,returned_samples
 
 
 def singleFit(X, S, **kwargs):
@@ -203,9 +242,8 @@ def draw_evidence_figure(X, S, weights, component_params):
 
 def generate_figures(X, S, sample_names, weights, component_params, **kwargs):
     save_path = os.path.join(kwargs.get("save_path"),
-                            kwargs.get("config_name"),
                             kwargs.get("dataset_id"))
-    fig, ax = plot(X, S, sample_names, weights, component_params)
+    fig, ax = plot(X, S, sample_names, weights, component_params,figsize=(8,6 * len(sample_names)))
     fig.savefig(
         os.path.join(save_path, "fit.jpeg"), 
         format="jpeg",
@@ -223,61 +261,66 @@ def generate_figures(X, S, sample_names, weights, component_params, **kwargs):
         bbox_inches="tight",
     )
     plt.close(fig)
-    fig, ax = fit_quality_figure(X, S, sample_names, weights, component_params)
-    fig.savefig(
-        os.path.join(save_path, "fit_quality.jpeg"),
-        format="jpeg",
-        dpi=1200,
-        transparent=True,
-        bbox_inches="tight",
-    )
+    fit_stat_table = get_fit_statistics(X, S, sample_names, weights, component_params)
+    with open(os.path.join(save_path, "fit_statistics.json"), "w") as f:
+        json.dump(fit_stat_table, f)
 
-def fit_quality_figure(X,S, sample_names, weights, component_params, **kwargs):
-    individual_fits = {}
-    for i, sample_name in enumerate(sample_names):
-        xs = X[S[:,i]]
-        for _ in range(100):
-            try:
-                p = singleFit(xs, np.ones((len(xs),1),dtype=bool),max_iters=10000,verbose=False)
-            except Exception as e:
-                print(e)
-                continue
-            break
-        try:
-            individual_fits[sample_name] = p
-        except UnboundLocalError:
-            try:
-                individual_fits[sample_name] = singleFit(xs, np.ones((len(xs),1),dtype=bool),max_iters=10000, n_components=1,constrained=False,verbsose=False)
-            except Exception as e:
-                print(e)
-                continue
-    fig, ax = plt.subplots(2,3,figsize=(15,7))
-    rng = np.arange(X.min() - .25,X.max() + .25 ,.01)
-    fig,ax = plt.subplots(2,3,figsize=(15,7),sharey='row',sharex=True)
-    for i, k in enumerate(sample_names):
-        sns.histplot(X[S[:,i]],ax=ax[0,i],stat='density',alpha=.5)
-        try:
-            value = individual_fits[k]
-        except KeyError:
-            continue
-        densities = density_utils.joint_densities(rng, value[0],value[1][0])
-        multisample_densities = density_utils.joint_densities(rng, component_params, weights[i])
-        P = densities.sum(0)
-        Q = multisample_densities.sum(0)
-        ax[0,i].plot(rng, Q,color='green', label='multi-sample fit')
-        ax[0,i].plot(rng, P,color='orange',label='single-sample fit')
+    aucs = [Parallel(n_jobs=-1)(delayed(empirical_iteration)(X[S[:,sample_num]], component_params, weights[sample_num]) for _ in range(1000)) for sample_num in range(S.shape[1])]
+
+    null_aucs = [Parallel(n_jobs=-1)(delayed(null_iteration)(X[S[:,sample_num]]) for _ in range(1000)) for sample_num in range(S.shape[1])]
+
+    with open(os.path.join(save_path, "aucs.json"), "w") as f:
+        json.dump(
+            {
+                "empirical": aucs,
+                "null": null_aucs,
+            },
+            f,
+        )
+    auc_figure(aucs, null_aucs, sample_names, save_path)
+
+def auc_figure(aucs, null_aucs, sample_names, save_path):
+    CONFIDENCE_LEVEL = .1
+    qmin,qmax = 100 * CONFIDENCE_LEVEL / 2, 100 * (1 - CONFIDENCE_LEVEL/2)
+    fig,ax = plt.subplots(2,len(aucs),figsize=(5 * len(aucs),5),sharex='col')
+    for i in range(len(aucs)):
+        sns.histplot(aucs[i],ax=ax[0,i])
+        a = np.array(aucs[i])
+        ax[0,i].set_title(f"{sample_names[i]} Empirical AUCs")
+        CI = np.percentile(a,[qmin,qmax])
+        ax[0,i].hlines(50,CI[0],CI[1],color='r',linestyle='--',label=f"{100 * (1 - CONFIDENCE_LEVEL)}% CI")
         ax[0,i].legend()
-        ax[0,i].set_title(k)
-        kl = P * np.log(P/Q)
-        ax[1,i].plot(rng, kl,label=f"KL divergence {np.nansum(kl):.3f}")
+        sns.histplot(null_aucs[i],ax=ax[1,i])
+        a = np.array(null_aucs[i])
+        CI = np.percentile(a,[qmin,qmax])
+        ax[1,i].hlines(50,CI[0],CI[1],color='r',linestyle='--',label=f"{100 * (1 - CONFIDENCE_LEVEL)}% CI")
         ax[1,i].legend()
-        ax[1,i].set_xlabel("Assay Score")
-    ax[1,0].set_ylabel("Relative Entropy")
-    return fig,ax
+        ax[1,i].set_title(f"{sample_names[i]} Null Distribution")
+    fig.savefig(os.path.join(save_path, "auc_rejection_test.jpeg"),format='jpeg',dpi=1200,transparent=True,bbox_inches='tight')
 
-def save(X, S, sample_names, best_fit, **kwargs):
+def draw_sample(params,weights,N=1):
+    samples = []
+    for i in range(N):
+        k = np.random.binomial(1,weights[1])
+        samples.append(sp.skewnorm.rvs(*params[k]))
+    return np.array(samples)
+
+def get_fit_statistics(X, S, sample_names, weights, component_params):
+    statistics = {}
+    for sample_idx, sample_name in enumerate(sample_names):
+        sample_observations = X[S[:,sample_idx]]
+        synthetic_observations = draw_sample(component_params,weights[sample_idx],N=len(sample_observations))
+        ks_test = sp.kstest(sample_observations, synthetic_observations)
+        ks_stat, ks_p = ks_test.statistic, ks_test.pvalue
+        xU = np.concatenate((sample_observations, synthetic_observations))
+        yU = np.concatenate((np.zeros_like(sample_observations), np.ones_like(synthetic_observations)))
+        u_stat, u_p = sp.mannwhitneyu(sample_observations, synthetic_observations)
+        auc = roc_auc_score(yU, xU)
+        statistics[sample_name] = dict(ks_stat=ks_stat, ks_p=ks_p, u_stat=u_stat, u_p=u_p, auc=auc)
+    return statistics
+
+def save(X, S, sample_names, best_fit, bootstrap_indices,**kwargs):
     save_path = Path(os.path.join(kwargs.get('save_path'),
-                                    kwargs.get("config_name"),
                                     kwargs.get("dataset_id")))
     save_path.mkdir(exist_ok=True, parents=True)
     component_params, weights, likelihoods = best_fit
@@ -288,34 +331,39 @@ def save(X, S, sample_names, best_fit, **kwargs):
                 "weights": weights.tolist(),
                 "likelihoods": likelihoods.tolist(),
                 "config": kwargs,
+                "sample_names": sample_names,
+                "bootstrap_indices": bootstrap_indices,
             },
             f,
         )
     generate_figures(X, S, sample_names, weights, component_params, **kwargs)
     
 def reload_result(**kwargs):
-    loadpath = os.path.join(kwargs.get("save_path"), kwargs.get('config_name'), kwargs.get("dataset_id"))
+    loadpath = os.path.join(kwargs.get("save_path"), kwargs.get("dataset_id"))
     with open(os.path.join(loadpath, "result.json")) as f:
         result = json.load(f)
     return result['component_params'], np.array(result['weights'])
 
 def bootstrap(X, S, **kwargs):
     XBootstrap, SBootstrap = X.copy(), S.copy()
+    bootstrap_indices = []
     offset = 0
     for sample in range(S.shape[1]):
         sample_bootstrap_indices = np.random.choice(np.where(S[:,sample])[0], size=S[:,sample].sum(), replace=True)
+        bootstrap_indices.append(tuple(list(map(lambda a: a.item(), sample_bootstrap_indices))))
         XBootstrap[offset:offset + len(sample_bootstrap_indices)] = X[sample_bootstrap_indices]
         SBootstrap[offset:offset + len(sample_bootstrap_indices), sample] = True
         offset += len(sample_bootstrap_indices)
-    return XBootstrap, SBootstrap
+    return XBootstrap, SBootstrap, bootstrap_indices
 
 def do_fit(X, S, **kwargs):
     return singleFit(X, S, **kwargs)
 
 def run(**kwargs):
     X, S, sample_names = load_data(**kwargs)
+    bootstrap_indices = [tuple(range(si)) for si in S.sum(0)]
     if kwargs.get("bootstrap",True):
-        X,S = bootstrap(X,S,**kwargs)
+        X,S,bootstrap_indices = bootstrap(X,S,**kwargs)
     plot_only = kwargs.get("plot_only", False)
     NUM_FITS = kwargs.get("num_fits", 25)
     save_path = kwargs.get("save_path", None)
@@ -330,16 +378,11 @@ def run(**kwargs):
         if likelihoods[-1] > best_likelihood:
             best_fit = (component_params, weights, likelihoods)
             best_likelihood = likelihoods[-1]
-    # for i in range(NUM_FITS):
-    #     component_params, weights, likelihoods = singleFit(X, S, **kwargs)
-    #     if likelihoods[-1] > best_likelihood:
-    #         best_fit = (component_params, weights, likelihoods)
-    #         best_likelihood = likelihoods[-1]
     if np.isinf(best_likelihood):
         print("No fits succeeded")
         return
     if save_path is not None:
-        save(X,S,sample_names, best_fit, **kwargs)
+        save(X,S,sample_names, best_fit, bootstrap_indices,**kwargs)
     return best_fit
 
 if __name__ == "__main__":

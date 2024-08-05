@@ -20,6 +20,7 @@ requests = "^2.32.3"
 openpyxl = "^3.1.5"
 mavehgvs = {git = "https://github.com/VariantEffect/mavehgvs.git"}
 swifter = "^1.4.0"
+ipywidgets = "^8.1.3"
 
 
 [tool.poetry.group.dev.dependencies]

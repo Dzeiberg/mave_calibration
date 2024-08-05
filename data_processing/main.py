@@ -7,6 +7,7 @@ from gnomad import queryGnomAD
 from mavehgvs import Variant
 import json
 import pickle
+from fire import Fire
 
 def process_dataset(dataset_dir, config_file):
     with open(config_file) as f:
@@ -22,6 +23,7 @@ def process_dataset(dataset_dir, config_file):
     uniprot_acc = dataset_metadata['uniprot_acc']
     gene_info = get_gene_info(uniprot_acc)
     scoreset = read_scoreset(scoreset_file)
+    scoreset = remove_nonsense(scoreset)
     region_splice_ai_scores = querySpliceAI(gene_info['CHROM'],gene_info['START'],gene_info['STOP'],**config['splice_ai'],write_dir=dataset_dir)
     
     clinvar = getClinvar(**config['clinvar'])
@@ -48,6 +50,10 @@ def read_scoreset(scoreset_file):
     is_synonymous = scoreset.hgvs_pro.apply(lambda x: Variant(x).is_synonymous())
     scoreset = scoreset.assign(synonymous=is_synonymous)
     return scoreset
+
+def remove_nonsense(scoreset):
+    nonsense = scoreset.hgvs_pro.apply(lambda s: s[-3:] == "Ter")
+    return scoreset[~nonsense]
 
 def segment_scoreset(clinvar,gnomad,scoreset):
     p_lp = set(clinvar.loc[clinvar.p_lp,'hgvs_pro'].values)
@@ -93,5 +99,6 @@ def get_gene_info(uniprot_acc):
 
     return dict(seq=seq,MANE_RefSeq_nuc=refseq_nuc,gene_name=gene_name,MANE_RefSeq_prot=refseq_prot,CHROM=CHROM,START=START,STOP=STOP)
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
+    Fire(process_dataset)
 #     o,v = process_dataset("/mnt/i/bio/mave_curation/findlay_BRCA1_SGE/","data_processing/config.json")
