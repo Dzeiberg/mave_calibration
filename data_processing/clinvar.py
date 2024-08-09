@@ -2,7 +2,6 @@ from pathlib import Path
 import pandas as pd
 from Bio.PDB.Polypeptide import protein_letters_3to1
 import urllib.request
-import swifter
 
 def clinvar_pathogenicity_status(row,pathogenic_or_benign):
     """

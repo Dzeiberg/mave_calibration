@@ -47,7 +47,7 @@ def read_scoreset(scoreset_file):
     scoreset = pd.read_csv(scoreset_file)
     assert 'score' in scoreset.columns, "score column not found in scoreset"
     assert 'hgvs_pro' in scoreset.columns, "hgvs_pro column not found in scoreset"
-    is_synonymous = scoreset.hgvs_pro.apply(lambda x: Variant(x).is_synonymous())
+    is_synonymous = scoreset.hgvs_pro.apply(lambda x: Variant(x).is_synonymous() or x[2:5] == x[-3:])
     scoreset = scoreset.assign(synonymous=is_synonymous)
     return scoreset
 
