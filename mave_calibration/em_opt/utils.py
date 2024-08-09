@@ -80,7 +80,7 @@ def em_iteration(
 
 
 def binary_search(
-    candidate_value, current_params, component_index, parameter_index, xlims
+    candidate_value, current_params, component_index, parameter_index, xlims,msg=""
 ):
     """
     Perform a binary search to find the value of the parameter that satisfies the density constraint
@@ -95,6 +95,8 @@ def binary_search(
     Returns:
     float : updated parameter value
     """
+    assert not density_constraint_violated(
+        current_params[0], current_params[1], xlims),msg+f"\n{current_params[0]}\n{current_params[1]}"
     current_alternate_params = [
         list(density_utils.canonical_to_alternate(*param)) for param in current_params
     ]
@@ -160,7 +162,7 @@ def weighted_binary_search(
 
 
 def constrained_em_iteration(
-    observations, sample_indicators, current_component_params, current_weights, xlims
+    observations, sample_indicators, current_component_params, current_weights, xlims,**kwargs
 ):
     """
     Perform one iteration of the EM algorithm with the density constraint
@@ -201,7 +203,7 @@ def constrained_em_iteration(
         else:
             bsearch_params = [*current_component_params]
         constrained_updated_loc = binary_search(
-            updated_loc,  bsearch_params, component_num, 0, xlims
+            updated_loc,  bsearch_params, component_num, 0, xlims,msg=f"loc_{component_num} iter {kwargs.get('iterNum',-1)}"
         )
         updated_Delta = get_Delta_update(
             constrained_updated_loc,
@@ -218,7 +220,7 @@ def constrained_em_iteration(
             a,loc,scale = density_utils.alternate_to_canonical(constrained_updated_loc,Delta,Gamma)
             bsearch_params = [[a,loc,scale], current_component_params[1]]
         constrained_updated_Delta = binary_search(
-            updated_Delta, bsearch_params, component_num, 1, xlims
+            updated_Delta, bsearch_params, component_num, 1, xlims,msg=f"Delta_{component_num} iter {kwargs.get('iterNum',-1)}"
         )
         updated_Gamma = get_Gamma_update(
             constrained_updated_loc,
@@ -236,13 +238,19 @@ def constrained_em_iteration(
             a,loc,scale = density_utils.alternate_to_canonical(constrained_updated_loc,constrained_updated_Delta,Gamma)
             bsearch_params = [[a,loc,scale], current_component_params[1]]
         constrained_updated_Gamma = binary_search(
-            updated_Gamma, bsearch_params, component_num, 2, xlims
+            updated_Gamma, bsearch_params, component_num, 2, xlims,msg=f"Gamma_{component_num} iter {kwargs.get('iterNum',-1)}"
         )
         updated_component_params[component_num] = density_utils.alternate_to_canonical(
             constrained_updated_loc,
             constrained_updated_Delta,
             constrained_updated_Gamma,
         )
+        if component_num == 0:
+            assert not density_constraint_violated(
+                updated_component_params[0], bsearch_params[1], xlims), f"violated at end of component {component_num} iter {kwargs.get('iterNum',-1)}\n {updated_component_params[0]}\n{bsearch_params[1]}"
+        else:
+            assert not density_constraint_violated(
+                updated_component_params[0], updated_component_params[1], xlims), f"violated at end of component {component_num} iter {kwargs.get('iterNum',-1)}\n {updated_component_params[0]}\n{updated_component_params[1]}"
     updated_weights = get_sample_weights(
         observations, sample_indicators, updated_component_params, current_weights
     )

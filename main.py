@@ -16,7 +16,6 @@ from pathlib import Path
 from fire import Fire
 from joblib import Parallel, delayed
 from sklearn.metrics import roc_auc_score
-from joblib import Parallel, delayed
 
 
 def draw_sample(params,weights,N=1):
@@ -73,7 +72,7 @@ def layer_distributions(X, S, weights_, params_, ax,label="",linestyle='-'):
     cmap = sns.color_palette("husl",3)
     N_samples = S.shape[1]
     N_components = len(params_)
-    rng = np.arange(X.min(), X.max(), .01)
+    rng = np.arange(X.min()-1, X.max()+1, .01)
     for sample_num in range(N_samples):
         component_joint_pdfs = density_utils.joint_densities(rng, params_, weights_[sample_num])
         for component_num in range(N_components):
@@ -84,6 +83,11 @@ def layer_distributions(X, S, weights_, params_, ax,label="",linestyle='-'):
         mixture_pdf = component_joint_pdfs.sum(axis=0)
         ax[sample_num].plot(rng, mixture_pdf, label=f"Mixture {label}",color=cmap[-1],linestyle=linestyle)
 
+
+def standardize(data,standardize_to):
+    mu,sigma = data[standardize_to].mean(),data[standardize_to].std()
+    return {k: (v - mu) / sigma for k,v in data.items()}
+
 def load_data(**kwargs):
     """
     Load data from the specified path and return the data and the sample matrix
@@ -92,6 +96,8 @@ def load_data(**kwargs):
     
     data_directory -- the path to the data directory
     dataset_id -- the id of the dataset, i.e. the directory name within the data directory
+    return_dict -- whether to return the data as a dictionary or as a tuple (default False)
+    standardize_to -- the sample to standardize to (default None)
 
     Returns:
     X -- the assay scores (N,)
@@ -99,10 +105,18 @@ def load_data(**kwargs):
     """
     dataset_id = kwargs.get("dataset_id")
     data_directory = kwargs.get("data_directory")
+    return_dict = kwargs.get("return_dict", False)
     data = joblib.load(os.path.join(data_directory, dataset_id, "observations.pkl"))
     with open(os.path.join(data_directory, "dataset_configs.json")) as f:
         config = json.load(f)
-
+    standardize_to = config[dataset_id].get("standardize_to", None)
+    if standardize_to is None:
+        standardize_to = kwargs.get("standardize_to", None)
+    if standardize_to is not None:
+        print("standardizing to",standardize_to)
+        data = standardize(data,standardize_to)
+    if return_dict:
+        return data
     sample_names = list(config["sample_names"])
     X = np.zeros((0,))
     S = np.zeros((0, len(sample_names)), dtype=bool)
@@ -123,12 +137,21 @@ def load_data(**kwargs):
 
 def singleFit(X, S, **kwargs):
     CONSTRAINED = kwargs.get("constrained", True)
+    buffer_stds = kwargs.get('buffer_stds',1)
+    obs_std = X.std()
+    xlims = (X.min() - obs_std * buffer_stds,
+             X.max() + obs_std * buffer_stds)
     N_components = kwargs.get("n_components", 2)
     N_samples = S.shape[1]
     MAX_N_ITERS = kwargs.get("max_iters", 10000)
     if CONSTRAINED:
-        initial_params = constrained_gmm_init(X,**kwargs)
-        assert not density_constraint_violated(*initial_params, (X.min(), X.max()))
+        init_to_sample = kwargs.get("init_to_sample", None)
+        if init_to_sample is not None:
+            xInit = X[S[:,init_to_sample]]
+        else:
+            xInit = X
+        initial_params = constrained_gmm_init(xInit,**kwargs)
+        assert not density_constraint_violated(*initial_params, xlims)
     else:
         initial_params = gmm_init(X,**kwargs)
     W = np.ones((N_samples, N_components)) / N_components
@@ -138,15 +161,18 @@ def singleFit(X, S, **kwargs):
             get_likelihood(X, S, initial_params, W) / len(S),
         ]
     )
-    xlims = (X.min(), X.max())
-    if CONSTRAINED:
-        updated_component_params, updated_weights = (
-            constrained_em_iteration(X, S, initial_params, W, xlims)
-        )
-    else:
-        updated_component_params, updated_weights = em_iteration(
-            X, S, initial_params, W
-        )
+    try:
+        if CONSTRAINED:
+            updated_component_params, updated_weights = (
+                constrained_em_iteration(X, S, initial_params, W, xlims, iterNum=0)
+            )
+        else:
+            updated_component_params, updated_weights = em_iteration(
+                X, S, initial_params, W
+            )
+    except ZeroDivisionError as e:
+        print("ZeroDivisionError")
+        return initial_params, W, [*likelihoods, -1 * np.inf]
     likelihoods = np.array(
         [
             *likelihoods,
@@ -154,19 +180,23 @@ def singleFit(X, S, **kwargs):
             / len(S),
         ]
     )
-    if kwargs.get("verbsose",True):
+    if kwargs.get("verbose",True):
         pbar = tqdm(total=MAX_N_ITERS)
     for i in range(MAX_N_ITERS):
-        if CONSTRAINED:
-            updated_component_params, updated_weights = (
-                constrained_em_iteration(
-                    X, S, updated_component_params, updated_weights, xlims
+        try:
+            if CONSTRAINED:
+                updated_component_params, updated_weights = (
+                    constrained_em_iteration(
+                        X, S, updated_component_params, updated_weights, xlims, iterNum=i+1,
+                    )
                 )
-            )
-        else:
-            updated_component_params, updated_weights = em_iteration(
-                X, S, updated_component_params, updated_weights
-            )
+            else:
+                updated_component_params, updated_weights = em_iteration(
+                    X, S, updated_component_params, updated_weights
+                )
+        except ZeroDivisionError as e:
+            print("ZeroDivisionError")
+            return initial_params, W, [*likelihoods, -1 * np.inf]
         likelihoods = np.array(
             [
                 *likelihoods,
@@ -176,12 +206,12 @@ def singleFit(X, S, **kwargs):
                 / len(S),
             ]
         )
-        if kwargs.get("verbsose",True):
+        if kwargs.get("verbose",True):
             pbar.set_postfix({"likelihood": f"{likelihoods[-1]:.6f}"})
             pbar.update(1)
         if i > 51 and (np.abs(likelihoods[-50:] - likelihoods[-51:-1]) < 1e-10).all():
             break
-    if kwargs.get("verbsose",True):
+    if kwargs.get("verbose",True):
         pbar.close()
     if CONSTRAINED:
         assert not density_constraint_violated(
@@ -209,16 +239,20 @@ def layer_evidence(ax, prior):
     axlen = ax.get_xlim()[1] - ax.get_xlim()[0]
     xdim = ax.get_xlim()[0] + axlen * 0.05
     C = get_tavtigian_constant(prior)
-    for i, ls, strength in zip(
+    pathogenic_evidence_thresholds = np.ones(4) * np.nan
+    benign_evidence_thresholds = np.ones(4) * np.nan
+    for strength_idx, (i, ls, strength) in enumerate(zip(
         1 / (2 ** np.arange(4)), ["-", "--", "-.", ":"], ["VSt", "St", "Mo", "Su"]
-    ):
+    )):
+        pathogenic_evidence_thresholds[strength_idx] = C ** i
+        benign_evidence_thresholds[strength_idx] = C ** -i
         ax.axhline(C**i, color="r", linestyle=ls)
         t = ax.text(xdim, C**i, f"P {strength}", fontsize=8)
         t.set_bbox(dict(facecolor="white", alpha=0.8, edgecolor="white"))
         t2 = ax.text(xdim, C**-i, f"B {strength}", fontsize=8)
         t2.set_bbox(dict(facecolor="white", alpha=0.8, edgecolor="white"))
         ax.axhline(C ** (-1 * i), color="b", linestyle=ls)
-    return C
+    return C, pathogenic_evidence_thresholds[::-1], benign_evidence_thresholds[::-1]
 
 
 def draw_evidence_figure(X, S, weights, component_params):
@@ -229,7 +263,7 @@ def draw_evidence_figure(X, S, weights, component_params):
 
     fig, ax = plt.subplots(1, 1, figsize=(5, 5), sharex=True)
     ax.plot(rng, f_P / f_B)
-    C = layer_evidence(ax, prior)
+    C, pathogenic_thresholds,benign_thresholds = layer_evidence(ax, prior)
     ax.set_yscale("log")
     ax.set_xlabel("Assay Score")
     ymin,ymax = ax.get_ylim()
@@ -237,7 +271,7 @@ def draw_evidence_figure(X, S, weights, component_params):
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     _ = ax.set_ylabel(r"$\text{LR}^+ $")
-    return fig, ax
+    return fig, ax, pathogenic_thresholds,benign_thresholds
 
 
 def generate_figures(X, S, sample_names, weights, component_params, **kwargs):
@@ -252,7 +286,7 @@ def generate_figures(X, S, sample_names, weights, component_params, **kwargs):
         bbox_inches="tight"
     )
     plt.close(fig)
-    fig, ax = draw_evidence_figure(X, S, weights, component_params)
+    fig, ax, pathogenic_thresholds,benign_thresholds = draw_evidence_figure(X, S, weights, component_params)
     fig.savefig(
         os.path.join(save_path, "evidence.jpeg"),
         format="jpeg",
@@ -278,6 +312,7 @@ def generate_figures(X, S, sample_names, weights, component_params, **kwargs):
             f,
         )
     auc_figure(aucs, null_aucs, sample_names, save_path)
+    return pathogenic_thresholds,benign_thresholds
 
 def auc_figure(aucs, null_aucs, sample_names, save_path):
     CONFIDENCE_LEVEL = .1
@@ -298,13 +333,6 @@ def auc_figure(aucs, null_aucs, sample_names, save_path):
         ax[1,i].set_title(f"{sample_names[i]} Null Distribution")
     fig.savefig(os.path.join(save_path, "auc_rejection_test.jpeg"),format='jpeg',dpi=1200,transparent=True,bbox_inches='tight')
 
-def draw_sample(params,weights,N=1):
-    samples = []
-    for i in range(N):
-        k = np.random.binomial(1,weights[1])
-        samples.append(sp.skewnorm.rvs(*params[k]))
-    return np.array(samples)
-
 def get_fit_statistics(X, S, sample_names, weights, component_params):
     statistics = {}
     for sample_idx, sample_name in enumerate(sample_names):
@@ -324,6 +352,7 @@ def save(X, S, sample_names, best_fit, bootstrap_indices,**kwargs):
                                     kwargs.get("dataset_id")))
     save_path.mkdir(exist_ok=True, parents=True)
     component_params, weights, likelihoods = best_fit
+    pathogenic_thresholds,benign_thresholds = generate_figures(X, S, sample_names, weights, component_params, **kwargs)
     with open(os.path.join(save_path, "result.json"), "w") as f:
         json.dump(
             {
@@ -333,10 +362,12 @@ def save(X, S, sample_names, best_fit, bootstrap_indices,**kwargs):
                 "config": kwargs,
                 "sample_names": sample_names,
                 "bootstrap_indices": bootstrap_indices,
+                "pathogenic_thresholds": pathogenic_thresholds.tolist(),
+                "benign_thresholds": benign_thresholds.tolist(),
             },
             f,
         )
-    generate_figures(X, S, sample_names, weights, component_params, **kwargs)
+    
     
 def reload_result(**kwargs):
     loadpath = os.path.join(kwargs.get("save_path"), kwargs.get("dataset_id"))

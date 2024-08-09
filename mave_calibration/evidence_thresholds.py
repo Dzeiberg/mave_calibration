@@ -6,24 +6,24 @@ def get_tavtigian_constant(prior : float, *args, **kwargs) -> float|int:
     C_max = kwargs.get('C_max',30000)
     verbose = kwargs.get('verbose',False)
     C_vals = np.arange(1,C_max+1)
-    pathogenic_posteriors = np.stack(list(map(lambda C: pathogenicRulesPosterior(C, prior, original),
-                                              C_vals)), axis=0)
+    pathogenic_posteriors = np.round(np.stack(list(map(lambda C: pathogenicRulesPosterior(C, prior, original),
+                                              C_vals)), axis=0),3)
     pathogenic_fails = np.sum(pathogenic_posteriors < 0.99,axis=1)
 
 
-    likely_pathogenic_posteriors = np.stack(list(map(lambda C: likelyPathogenicRulesPosterior(C, prior, original),
-                                                     C_vals)), axis=0)
+    likely_pathogenic_posteriors = np.round(np.stack(list(map(lambda C: likelyPathogenicRulesPosterior(C, prior, original),
+                                                     C_vals)), axis=0),3)
     lp_mask = (likely_pathogenic_posteriors < 0.90)
     if strict:
         lp_mask = lp_mask | (likely_pathogenic_posteriors > 0.99)
     likely_pathogenic_fails = np.sum(lp_mask,axis=1)
     
-    benign_posteriors = np.stack(list(map(lambda C: benignRulesPosterior(C, prior),
-                                            C_vals)), axis=0)
+    benign_posteriors = np.round(np.stack(list(map(lambda C: benignRulesPosterior(C, prior),
+                                            C_vals)), axis=0),3)
     benign_fails = np.sum(benign_posteriors > 0.01,axis=1)
 
-    likely_benign_posteriors = np.stack(list(map(lambda C: likelybenignRulesPosterior(C, prior, original),
-                                                    C_vals)), axis=0)
+    likely_benign_posteriors = np.round(np.stack(list(map(lambda C: likelybenignRulesPosterior(C, prior, original),
+                                                    C_vals)), axis=0),3)
 
     lb_mask = (likely_benign_posteriors > 0.10)
     if strict:
@@ -79,6 +79,7 @@ def likelyPathogenicRulesPosterior(C : int , prior : float , original : bool) ->
     return posterior
 
 def locallrPlus2Posterior(llrp : float, prior : float) -> float:
+    return llrp * prior / ((llrp-1) * prior + 1)
     ratio = llrp * prior / (1 - prior)
     posterior = ratio / (1 + ratio)
     if np.isnan(posterior):

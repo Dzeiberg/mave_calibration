@@ -58,7 +58,12 @@ def alternate_to_canonical(loc,Delta, Gamma):
     loc: location parameter
     scale: scale parameter
     """
-    a = np.sign(Delta) * np.sqrt(Delta**2 / Gamma)
+    try:
+        a = np.sign(Delta) * np.sqrt(Delta**2 / Gamma)
+    except ZeroDivisionError:
+        raise ZeroDivisionError(f"Invalid skewness parameter: {np.sign(Delta) * np.sqrt(Delta**2 / Gamma)} from Delta: {Delta}, Gamma: {Gamma}")
+    if np.isinf(a) or np.isnan(a):
+        raise ZeroDivisionError(f"Invalid skewness parameter: {a} from Delta: {Delta}, Gamma: {Gamma}")
     scale = np.sqrt(Gamma + Delta**2)
     return tuple(map(float,(a, loc, scale)))
 

@@ -58,6 +58,10 @@ def constrained_gmm_init(X, **kwargs):
     assert n_components == 2
     n_inits = kwargs.get("n_inits", 10)
     X = np.array(X).reshape((-1, 1))
+    buffer_stds = kwargs.get("buffer_stds", 0)
+    obs_std = X.std()
+    xlims = (X.min() - obs_std * buffer_stds,
+             X.max() + obs_std * buffer_stds)
     gmm_component_responsibilities = get_gmm_responsibilities(X, **kwargs)
     best_parameters = []
     BestLL = -1e10
@@ -74,26 +78,35 @@ def constrained_gmm_init(X, **kwargs):
 
             params = fit_skew_normal(X_component)
             component_parameters.append(params)
-        for _ in range(10000):
+        for _ in range(100):
             if not density_constraint_violated(
-                component_parameters[0], component_parameters[1], (X.min(), X.max())
+                component_parameters[0], component_parameters[1], xlims
             ):
                 break
-            larger_comp_index = np.argmax([p[2] for p in component_parameters])
-            component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * .99,
-                                                        component_parameters[larger_comp_index][1],
-                                                        component_parameters[larger_comp_index][2] * .99]
+            larger_comp_index = np.argmax([max(abs(p[0]),p[2]) for p in component_parameters])
+            if abs(component_parameters[larger_comp_index][0]) > component_parameters[larger_comp_index][2]:
+                # print(f"scaling down a of comp {larger_comp_index}")
+                component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * -.9,
+                                                            component_parameters[larger_comp_index][1],
+                                                            component_parameters[larger_comp_index][2]]
+            else:
+                # print(f"scaling down scale of comp {larger_comp_index}")
+                component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0],
+                                                            component_parameters[larger_comp_index][1],
+                                                            component_parameters[larger_comp_index][2] * .9]
         if density_constraint_violated(
-            component_parameters[0], component_parameters[1], (X.min(), X.max())
+            component_parameters[0], component_parameters[1], xlims
         ):
-            print(f"init {i} failed")
+            print(f"init {rep} failed; final parameters: {component_parameters[0]}\t{component_parameters[1]}")
             continue
         LL = get_LL(X, component_parameters, comp_weights)
         if LL > BestLL:
             best_parameters = component_parameters
             BestLL = LL
     if not len(best_parameters):
-        raise ValueError("Could not initialize to satisfy density constraint")
+        print("Could not initialize to satisfy density constraint; defaulting to random")
+        best_parameters = [[-.25, X.min(), 2],
+                           [.25, X.max(), 2]]
     return best_parameters
     
 
