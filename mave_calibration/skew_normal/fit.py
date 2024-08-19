@@ -5,8 +5,12 @@ def fit_skew_normal(X):
     """
     Fit a skew normal distribution to the data.
     """
-    return list(map(float,method_of_moments(X)))
-    return list(map(float,sps.skewnorm.fit(X)))
+    params = list(map(float,sps.skewnorm.fit(X)))
+    if abs(params[0]) > 25:
+        return list(map(float,method_of_moments(X)))
+    return params
+
+    
     
 def method_of_moments(X):
     params = [0,0,0]

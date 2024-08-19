@@ -102,6 +102,7 @@ def load_data(**kwargs):
     Returns:
     X -- the assay scores (N,)
     S -- the sample matrix (N,S)
+    sample_names -- the sample names (S,)
     """
     dataset_id = kwargs.get("dataset_id")
     data_directory = kwargs.get("data_directory")
@@ -131,8 +132,10 @@ def load_data(**kwargs):
         returned_samples.append(sample_name)
     if config[dataset_id]["invert"]:
         X = -X
+    control_sample_name = config[dataset_id].get("controls", "b_lb")
+    controls_index = sample_names.index(control_sample_name)
     S = S[:,S.sum(0) > 0]
-    return X, S,returned_samples
+    return X, S,returned_samples,controls_index
 
 
 def singleFit(X, S, **kwargs):
@@ -220,8 +223,8 @@ def singleFit(X, S, **kwargs):
     return updated_component_params, updated_weights, likelihoods
 
 
-def prior_from_weights(W):
-    prior = ((W[2, 0] - W[1, 0]) / (W[0, 0] - W[1, 0])).item()
+def prior_from_weights(W, population_idx=2, controls_idx=1, pathogenic_idx=0):
+    prior = ((W[population_idx, 0] - W[controls_idx, 0]) / (W[pathogenic_idx, 0] - W[controls_idx, 0])).item()
     return np.clip(prior, 1e-10, 1 - 1e-10)
 
 
@@ -352,7 +355,13 @@ def save(X, S, sample_names, best_fit, bootstrap_indices,**kwargs):
                                     kwargs.get("dataset_id")))
     save_path.mkdir(exist_ok=True, parents=True)
     component_params, weights, likelihoods = best_fit
-    pathogenic_thresholds,benign_thresholds = generate_figures(X, S, sample_names, weights, component_params, **kwargs)
+    draw_figs = kwargs.get("draw_figs", True)
+    if draw_figs:
+        pathogenic_thresholds,benign_thresholds = generate_figures(X, S, sample_names, weights, component_params, **kwargs)
+        pathogenic_thresholds = pathogenic_thresholds.tolist()
+        benign_thresholds = benign_thresholds.tolist()
+    else:
+        pathogenic_thresholds,benign_thresholds = [],[]
     with open(os.path.join(save_path, "result.json"), "w") as f:
         json.dump(
             {
@@ -362,8 +371,8 @@ def save(X, S, sample_names, best_fit, bootstrap_indices,**kwargs):
                 "config": kwargs,
                 "sample_names": sample_names,
                 "bootstrap_indices": bootstrap_indices,
-                "pathogenic_thresholds": pathogenic_thresholds.tolist(),
-                "benign_thresholds": benign_thresholds.tolist(),
+                "pathogenic_thresholds": pathogenic_thresholds,
+                "benign_thresholds": benign_thresholds,
             },
             f,
         )
@@ -391,7 +400,7 @@ def do_fit(X, S, **kwargs):
     return singleFit(X, S, **kwargs)
 
 def run(**kwargs):
-    X, S, sample_names = load_data(**kwargs)
+    X, S, sample_names,controls_index = load_data(**kwargs)
     bootstrap_indices = [tuple(range(si)) for si in S.sum(0)]
     if kwargs.get("bootstrap",True):
         X,S,bootstrap_indices = bootstrap(X,S,**kwargs)
