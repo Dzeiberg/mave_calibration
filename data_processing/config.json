@@ -5,7 +5,7 @@
     "clinvar": {
         "cache_dir" : "/mnt/d/mave_calibration/cache/",
         "year" : "2024",
-        "month" : "07"
+        "month" : "08"
     },
     "gnomad": {
         "gnomad_vcf_root": "/mnt/i/bio/gnomad/release/4.1/vcf/"
@@ -13,6 +13,7 @@
     "external_tools" : {
         "java" : "/usr/bin/java",
         "gatk" : "/home/dz/utils/gatk-4.4.0.0/gatk",
-        "picard_filepath": "/home/dz/picard/build/libs/picard.jar"
+        "picard_filepath": "/home/dz/picard/build/libs/picard.jar",
+        "ensembl_vep_path": "/home/dz/ensembl-vep/vep"
     }
 }

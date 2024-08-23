@@ -2,8 +2,9 @@ import pandas as pd
 from datetime import datetime
 import subprocess
 from pathlib import Path
+from pysam import VariantFile
 
-def queryGnomAD(CHROM,START,STOP,**kwargs):
+def queryGnomAD(CHROM,START,STOP,HGNC_ID,**kwargs):
     """
     Query gnomAD for missense variants in a gene
 
@@ -36,7 +37,7 @@ def queryGnomAD(CHROM,START,STOP,**kwargs):
     assert gnomad_vcf_root.exists(), "gnomad_vcf_root does not exist"
     write_dir = Path(kwargs.get("write_dir","/tmp"))
     write_dir.mkdir(exist_ok=True)
-    java = Path(kwargs.get("java_path"))
+    java = Path(kwargs.get("java"))
     picard_filepath = Path(kwargs.get("picard_filepath"))
     assert picard_filepath.exists(), "picard_filepath does not exist"
 
@@ -51,10 +52,12 @@ def queryGnomAD(CHROM,START,STOP,**kwargs):
     output_File = write_dir / f"combinevariants_{str(datetime.now()).replace(' ','_')}.vcf"
     cmd = f'{java} -jar {picard_filepath} MergeVcfs I={exomes_output_File} I={genomes_output_File} O={output_File}'
     subprocess.run(cmd.split(" "))
-    variants2table = f"gatk VariantsToTable -V {output_File} -F CHROM -F POS -F ID -F REF -F ALT -F QUAL -F FILTER -ASF AC -ASF AF -ASF vep -O {str(output_File).replace('.vcf','.tsv')}"
+    tsvout = str(output_File).replace('.vcf','.tsv')
+    variants2table = f"gatk VariantsToTable -V {output_File} -F CHROM -F POS -F ID -F REF -F ALT -F QUAL -F FILTER -ASF AC -ASF AF -ASF vep -O {tsvout}"
     subprocess.run(variants2table.split(" "))
-    gnomAD_df = pd.read_csv(str(output_File).replace('.vcf','.tsv'),delimiter='\t')
-    vep_df = parse_vep(gnomAD_df)
+    gnomAD_df = pd.read_csv(tsvout,delimiter='\t')
+    vep_columns = get_vep_columns_from_vcf_header(output_File)
+    vep_df = parse_vep(gnomAD_df,columns=vep_columns)
     gnomAD_df = pd.merge(gnomAD_df,vep_df,left_index=True,right_on='index',validate='one_to_many')
     missense_df = gnomAD_df[gnomAD_df.Consequence == "missense_variant"]
     missense_df = missense_df.assign(hgvs_pro=missense_df.HGVSp.apply(lambda s: s.split(":")[1]))
@@ -63,11 +66,16 @@ def queryGnomAD(CHROM,START,STOP,**kwargs):
                                      REF=missense_df.REF.astype(str),
                                      ALT=missense_df.ALT.astype(str))
     missense_df.to_csv(write_dir / f"gnomad_matches_CHR{CHROM}_{START}_{STOP}.tsv",sep='\t',index=False)
-    return missense_df
+    gene_missense = missense_df[missense_df.HGNC_ID == HGNC_ID]
+    gene_missense.to_csv(write_dir / f"gnomad_matches_{HGNC_ID}_CHR{CHROM}_{START}_{STOP}.tsv",sep='\t',index=False)
+    return gene_missense
 
-def parse_vep(df):
-    vep_columns = "Allele|Consequence|IMPACT|SYMBOL|Gene|Feature_type|Feature|BIOTYPE|EXON|INTRON|HGVSc|HGVSp|cDNA_position|CDS_position|Protein_position|Amino_acids|Codons|Existing_variation|ALLELE_NUM|DISTANCE|STRAND|FLAGS|VARIANT_CLASS|MINIMISED|SYMBOL_SOURCE|HGNC_ID|CANONICAL|TSL|APPRIS|CCDS|ENSP|SWISSPROT|TREMBL|UNIPARC|GENE_PHENO|SIFT|PolyPhen|DOMAINS|HGVS_OFFSET|GMAF|AFR_MAF|AMR_MAF|EAS_MAF|EUR_MAF|SAS_MAF|AA_MAF|EA_MAF|ExAC_MAF|ExAC_Adj_MAF|ExAC_AFR_MAF|ExAC_AMR_MAF|ExAC_EAS_MAF|ExAC_FIN_MAF|ExAC_NFE_MAF|ExAC_OTH_MAF|ExAC_SAS_MAF|CLIN_SIG|SOMATIC|PHENO|PUBMED|MOTIF_NAME|MOTIF_POS|HIGH_INF_POS|MOTIF_SCORE_CHANGE|LoF|LoF_filter|LoF_flags|LoF_info".split("|")
-    vep_series = df.vep.apply(lambda r: list(map(lambda s: dict(zip(vep_columns,s.split('|'))),r.split(","))))
+def get_vep_columns_from_vcf_header(vcf_file):
+    vcf = VariantFile(vcf_file)
+    return vcf.header.info['vep'].description.split("Format: ")[1].split("|")
+    
+def parse_vep(df,columns):
+    vep_series = df.vep.apply(lambda r: list(map(lambda s: dict(zip(columns,s.split('|'))),r.split(","))))
     vep_df = pd.DataFrame(vep_series,index=df.index).explode('vep')
     vep_df = pd.DataFrame.from_records(vep_df.vep.values,index=vep_df.index).reset_index()
     return vep_df
