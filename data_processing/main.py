@@ -90,6 +90,10 @@ def segment_scoreset(clinvar,gnomad,scoreset):
     return observations,hgvs_pro
 
 def filter_splice_variants(df,splice_ai_scores,cutoff=.5):
+    df = df.assign(CHROM=df.CHROM.str.replace("chr",""),
+                    POS=df.POS.astype(str))
+    splice_ai_scores = splice_ai_scores.assign(CHROM=splice_ai_scores.CHROM.str.replace("chr",""),
+                                                POS=splice_ai_scores.POS.astype(str))
     df = pd.merge(df,splice_ai_scores,on=['CHROM','POS','REF','ALT'],how='left')
     df.loc[df.spliceAI_score.isna(),'spliceAI_score'] = 0
     nonsplice_mask = df.spliceAI_score < cutoff

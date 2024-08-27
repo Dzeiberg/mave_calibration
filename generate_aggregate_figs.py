@@ -8,11 +8,12 @@ import seaborn as sns
 import pandas as pd
 from mave_calibration.skew_normal import density_utils
 from fire import Fire
-from main import prior_from_weights
+from main import prior_from_weights, empirical_iteration, null_iteration
 from mave_calibration.evidence_thresholds import get_tavtigian_constant
+from joblib import Parallel, delayed
 
 data_dir = Path("/mnt/i/bio/mave_curation/")
-results_dir = Path("/mnt/d/mave_calibration/results_08_09_24/")
+results_dir = Path("/mnt/d/mave_calibration/results_08_23_24/")
 with open(data_dir / "dataset_configs.json") as f:
     dataset_config = json.load(f)
     
@@ -25,6 +26,49 @@ def read_result(r_dir):
     with open(r_dir / "result.json") as f:
         result = json.load(f)
     return result
+
+def read_rejection_test_aucs(r_dir):
+    with open(r_dir / "aucs.json") as f:
+        aucs = json.load(f)
+    return aucs
+
+def summarize_rejection_test(dataset_name,confidence_level=0.10):
+    raise NotImplementedError("I do not run rejection tests in model fitting")
+    """
+    Summarize the rejection test results for a dataset
+    
+    Required Args:
+        - dataset_name : str : name of the dataset
+
+    Optional Args:
+        - confidence_level : float : confidence level for the test (default 0.10)
+    Returns:
+        - dict : dictionary with the proportion of rejections for each sample
+    """
+    test_iters = []
+    for iter_result in results_dir.glob(f"iter_*/{dataset_name}"):
+        if not os.path.isfile(iter_result / "aucs.json"):
+            if not os.path.isfile(iter_result / "result.json"):
+                continue
+            result = read_result(iter_result)
+            aucs = {}
+            X,S,sample_names,controls_idx = data[dataset_name]
+            aucs['empirical'] = [Parallel(n_jobs=-1)(delayed(empirical_iteration)(X[S[:,sample_num]], result['component_params'], result['weights'][sample_num]) for _ in range(1000)) for sample_num in range(S.shape[1])]
+
+            aucs['null'] = [Parallel(n_jobs=-1)(delayed(null_iteration)(X[S[:,sample_num]]) for _ in range(1000)) for sample_num in range(S.shape[1])]
+        else:
+            aucs = read_rejection_test_aucs(iter_result)
+        test_iters.append(aucs)
+    sample_names = data[dataset_name][2]
+    n_rejections = {s : 0 for s in sample_names}
+    for test_result in test_iters:
+        for sample_num,sample_name in enumerate(sample_names):
+            emp_low, emp_high = np.quantile(test_result['empirical'][sample_num],(confidence_level / 2 , 1 - confidence_level / 2))
+            null_low, null_high = np.quantile(test_result['null'][sample_num], (confidence_level / 2 , 1 - confidence_level / 2))
+            if emp_low > null_high or emp_high < null_low:
+                n_rejections[sample_name] += 1
+    n_tests = len(test_iters)
+    return {s : n / n_tests for s,n in n_rejections.items()}
 
 def get_oob_indices(result, X):
     return np.array(list(set(list(range(X.shape[0]))) - \
@@ -125,8 +169,8 @@ def thresholds_from_prior(prior):
         benign_evidence_thresholds[strength_idx] = C ** -i
     return pathogenic_evidence_thresholds, benign_evidence_thresholds
 
-def assign_strength(score, dataset_name,):
-    lrPlus_median, lrPlus_quantiles = predict(score, dataset_name, return_quantiles=True)
+def assign_strength(scores, dataset_name,):
+    _, lrPlus_quantiles = predict(scores, dataset_name, return_quantiles=True)
     pathogenic_thresholds, benign_thresholds = get_thresholds(dataset_name)
     evidence = []
     for lrP,lrB in zip(lrPlus_quantiles[0], lrPlus_quantiles[1]):
@@ -227,6 +271,9 @@ def main(dataset_name,save_dir):
     fig3 = evidence_distr_fig(dataset_name)
     fig3.savefig(save_dir / f"{dataset_name}_evidence.jpg",**savekwargs)
     plt.close(fig3)
+    # rejection_test_results = summarize_rejection_test(dataset_name)
+    # with open(save_dir / f"{dataset_name}_rejection_test.json",'w') as f:
+    #     json.dump(rejection_test_results,f)
 
 if __name__ == "__main__":
     Fire(main)

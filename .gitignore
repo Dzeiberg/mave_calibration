@@ -1,2 +1,4 @@
 **/*.pyc
-run.sh
+*.sh
+*.pdf
+*.lock
