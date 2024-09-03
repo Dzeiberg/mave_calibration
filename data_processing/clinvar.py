@@ -23,65 +23,17 @@ def clinvar_pathogenicity_status(row,pathogenic_or_benign):
     else:
         raise ValueError()
 
-# def getClinvar(year="2024",month="08",use_cached_processed_file=True,cache_dir="/tmp",debug=False):
-#     cache_dir = Path(cache_dir)
-#     clinvar_ftp_pth = f"https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/archive/variant_summary_{year}-{month}.txt.gz"
-#     local_txt_pth = cache_dir / f"variant_summary_{year}-{month}.txt.gz"
-#     pkl_pth = cache_dir / f"variant_summary_{year}-{month}.pkl"
-#     processed_pkl = cache_dir / f"variant_summary_{year}-{month}_processed.pkl"
-#     if use_cached_processed_file and processed_pkl.exists():
-#         clinvar_snvs = pd.read_pickle(processed_pkl)
-#     else:
-#         if pkl_pth.exists():
-#             print("loading variant summary pickle")
-#             clinvar_variant_summary = pd.read_pickle(pkl_pth)
-#             print("loaded")
-#         else:
-#             if not local_txt_pth.exists():
-#                 print("downloading clinvar")
-#                 urllib.request.urlretrieve(clinvar_ftp_pth, local_txt_pth)
-#             print("reading txt.gz file")
-#             clinvar_variant_summary = pd.read_csv(local_txt_pth,delimiter="\t",compression='gzip')
-#             print("saving as pickle")
-#             pd.to_pickle(clinvar_variant_summary,pkl_pth)
-#         # ONLY ANNOTATED SNV
-#         clinvar_snvs = clinvar_variant_summary[clinvar_variant_summary.Type == "single nucleotide variant"]
-#         # Only protein variants
-#         clinvar_snvs = clinvar_snvs[clinvar_snvs.Name.apply(is_protein_variant)]
-#         # Annotate P/LP and B/LB when >= 1-star
-#         clinvar_snvs = clinvar_snvs.assign(is_pathogenic=\
-#                                            clinvar_snvs.apply(lambda row: clinvar_pathogenicity_status(row,'pathogenic'),axis=1),
-#                                            is_benign=clinvar_snvs.apply(lambda row: clinvar_pathogenicity_status(row,'benign'),axis=1))
-#         clinvar_snvs = clinvar_snvs.assign(GeneID = clinvar_snvs.GeneID.astype(str))
-        
-#         clinvar_snvs = clinvar_snvs.assign(HGVSp="p."+clinvar_snvs.Name.str.split("p.",regex=False).str[1].str.slice(0,-1),
-#                                         RefSeq_nuc=clinvar_snvs.Name.str.split("(",regex=False).str[0])
-#         clinvar_snvs = clinvar_snvs.assign(is_missense=clinvar_snvs.Name.apply(is_missense))
-#         clinvar_snvs = clinvar_snvs.assign(is_nonsense=clinvar_snvs.Name.apply(is_nonsense))
-#         clinvar_snvs = clinvar_snvs.assign(is_unknown=clinvar_snvs.Name.apply(is_unknown))
-#         clinvar_snvs = clinvar_snvs.assign(is_silent=clinvar_snvs.Name.apply(is_silent))
-#         clinvar_snvs = clinvar_snvs.assign(is_other_protein_variant=clinvar_snvs.Name.apply(is_other_protein_variant))
-#         clinvar_snvs = annotate(clinvar_snvs)
-#         parsed_dicts = clinvar_snvs.Name.apply(parse_clinvar_name)
-        
-#         parsed_names = pd.DataFrame.from_records(parsed_dicts.values,index=clinvar_snvs.index)
-#         parsed_names.columns = ["Name_"+col for col in parsed_names.columns]
-#         if clinvar_snvs.shape[0] != parsed_names.shape[0]:
-#             raise ValueError(f"Mismatch in number of rows between clinvar_snvs and parsed_names: {clinvar_snvs.shape[0]} vs {parsed_names.shape[0]}")
-#         clinvar_snvs = pd.concat([clinvar_snvs,parsed_names],axis=1)
-#         # Cast types and rename to align with other files
-#         clinvar_snvs = clinvar_snvs.assign(
-#             CHROM=clinvar_snvs.Chromosome.astype(str),
-#             POS=clinvar_snvs.PositionVCF.astype(str),
-#             REF=clinvar_snvs.ReferenceAlleleVCF.astype(str),
-#             ALT=clinvar_snvs.AlternateAlleleVCF.astype(str),
-#             hgvs_pro=clinvar_snvs.HGVSp)
-#         pd.to_pickle(clinvar_snvs,processed_pkl)
-#         if debug:
-#             return clinvar_snvs, parsed_names
-#     return clinvar_snvs,
-
 def getClinvar(year="2024",month="08",use_cached_processed_file=True,write_to_cache=True,cache_dir="/tmp"):
+    """
+    Get ClinVar data
+
+    Keyword Arguments:
+    year -- year of ClinVar data (default "2024")
+    month -- month of ClinVar data (default "08")
+    use_cached_processed_file -- use cached processed file (default True)
+    write_to_cache -- write processed file to cache (default True)
+    cache_dir -- cache directory (default "/tmp")
+    """
     cache_dir = Path(cache_dir)
     clinvar_ftp_pth = f"https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/archive/variant_summary_{year}-{month}.txt.gz"
     local_txt_pth = cache_dir / f"variant_summary_{year}-{month}.txt.gz"

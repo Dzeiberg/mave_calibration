@@ -1,237 +1,78 @@
 from pathlib import Path
-import os
-import numpy as np
 from main import load_data
 import json
+from fire import Fire
 import matplotlib.pyplot as plt
 import seaborn as sns
-import pandas as pd
+import numpy as np
 from mave_calibration.skew_normal import density_utils
-from fire import Fire
-from main import prior_from_weights, empirical_iteration, null_iteration
+from main import prior_from_weights
 from mave_calibration.evidence_thresholds import get_tavtigian_constant
+from tqdm import tqdm
 from joblib import Parallel, delayed
+from main import run,empirical_iteration,null_iteration
+from matplotlib.gridspec import GridSpec
 
-data_dir = Path("/mnt/i/bio/mave_curation/")
-results_dir = Path("/mnt/d/mave_calibration/results_08_23_24/")
-with open(data_dir / "dataset_configs.json") as f:
-    dataset_config = json.load(f)
-    
-data = {sample_name : load_data(dataset_id=sample_name,
-                                data_directory=data_dir) \
-        for sample_name in os.listdir(data_dir) if os.path.isdir(data_dir / sample_name) and sample_name in dataset_config}
-
-
-def read_result(r_dir):
-    with open(r_dir / "result.json") as f:
-        result = json.load(f)
-    return result
-
-def read_rejection_test_aucs(r_dir):
-    with open(r_dir / "aucs.json") as f:
-        aucs = json.load(f)
-    return aucs
-
-def summarize_rejection_test(dataset_name,confidence_level=0.10):
-    raise NotImplementedError("I do not run rejection tests in model fitting")
-    """
-    Summarize the rejection test results for a dataset
-    
-    Required Args:
-        - dataset_name : str : name of the dataset
-
-    Optional Args:
-        - confidence_level : float : confidence level for the test (default 0.10)
-    Returns:
-        - dict : dictionary with the proportion of rejections for each sample
-    """
-    test_iters = []
-    for iter_result in results_dir.glob(f"iter_*/{dataset_name}"):
-        if not os.path.isfile(iter_result / "aucs.json"):
-            if not os.path.isfile(iter_result / "result.json"):
-                continue
-            result = read_result(iter_result)
-            aucs = {}
-            X,S,sample_names,controls_idx = data[dataset_name]
-            aucs['empirical'] = [Parallel(n_jobs=-1)(delayed(empirical_iteration)(X[S[:,sample_num]], result['component_params'], result['weights'][sample_num]) for _ in range(1000)) for sample_num in range(S.shape[1])]
-
-            aucs['null'] = [Parallel(n_jobs=-1)(delayed(null_iteration)(X[S[:,sample_num]]) for _ in range(1000)) for sample_num in range(S.shape[1])]
-        else:
-            aucs = read_rejection_test_aucs(iter_result)
-        test_iters.append(aucs)
-    sample_names = data[dataset_name][2]
-    n_rejections = {s : 0 for s in sample_names}
-    for test_result in test_iters:
-        for sample_num,sample_name in enumerate(sample_names):
-            emp_low, emp_high = np.quantile(test_result['empirical'][sample_num],(confidence_level / 2 , 1 - confidence_level / 2))
-            null_low, null_high = np.quantile(test_result['null'][sample_num], (confidence_level / 2 , 1 - confidence_level / 2))
-            if emp_low > null_high or emp_high < null_low:
-                n_rejections[sample_name] += 1
-    n_tests = len(test_iters)
-    return {s : n / n_tests for s,n in n_rejections.items()}
-
-def get_oob_indices(result, X):
-    return np.array(list(set(list(range(X.shape[0]))) - \
-                         set(np.concatenate(result["bootstrap_indices"]))))
-
-
-def get_lrPlus(S, result,dataset_name, pathogenic_sample_num=0):
-    controls_idx=data[dataset_name][3]
-    f_P = density_utils.joint_densities(S, result['component_params'], result['weights'][pathogenic_sample_num]).sum(0)
-    f_B = density_utils.joint_densities(S, result['component_params'], result['weights'][controls_idx]).sum(0)
-    return f_P / f_B
-
-def predict_on_oob(result, X,dataset_name):
-    oob_indices = get_oob_indices(result, X)
-    predictions = np.ones(X.shape[0]) * np.nan
-    oob_obs = X[oob_indices]
-    predictions[oob_indices] = get_lrPlus(oob_obs, result,dataset_name)
-    return predictions
-
-def get_oob_predictions(dataset_name,sample_num=None, return_quantiles=False, return_all=False):
-    X,S = data[dataset_name][:2]
-    if sample_num is not None:
-        x_sample = X[S[:,sample_num]]
-    else:
-        x_sample = X
-    preds = []
-    for iter_result in results_dir.glob(f"iter_*/{dataset_name}"):
-        if not os.path.isfile(iter_result / "result.json"):
+def load_results(results_dir,dataset_name,lim=None):
+    results = []
+    results_dir = Path(results_dir)
+    for i,r_dir in tqdm(enumerate(results_dir.glob(f"iter_*/{dataset_name}"))):
+        if not (r_dir / "result.json").exists():
             continue
-        result = read_result(iter_result)
-        preds.append(predict_on_oob(result, x_sample,dataset_name))
-    P = np.stack(preds)
-    if return_all:
-        return P
-    quantiles = np.nanquantile(P, [0.25, .5, 0.75], axis=0)
-    if return_quantiles:
-        return quantiles[1], quantiles[[0,-1],:]
-    return quantiles[1]
+        with open(r_dir / "result.json") as f:
+            result = json.load(f)
+        results.append(result)
+        if lim is not None and i == lim:
+            break
+    return results
 
-def predict(X, dataset_name, posterior=False,return_quantiles=False, return_all=False):
-    preds = []
-    for iter_result in results_dir.glob(f"iter_*/{dataset_name}"):
-        if not os.path.isfile(iter_result / "result.json"):
-            continue
-        result = read_result(iter_result)
-        preds.append(get_lrPlus(X, result,dataset_name))
-    P = np.stack(preds)
-    if posterior:
-        priors = np.array(get_priors(dataset_name)).reshape((-1,1))
-        P = P * priors / ((P-1) * priors + 1)
-    if return_all:
-        return P
-    quantiles = np.nanquantile(P, [0.25, .5, 0.75], axis=0)
-    if return_quantiles:
-        return quantiles[1], quantiles[[0,-1],:]
-    return quantiles[1]
+def thresholds_from_prior(prior, point_values=[1,2,3,4,8]):
+    exp_vals = 1 / np.array(point_values).astype(float)
+    C = get_tavtigian_constant(prior)
+    pathogenic_evidence_thresholds = np.ones(len(point_values)) * np.nan
+    benign_evidence_thresholds = np.ones(len(point_values)) * np.nan
+    for strength_idx, exp_val in enumerate(exp_vals):
+        pathogenic_evidence_thresholds[strength_idx] = C ** exp_val
+        benign_evidence_thresholds[strength_idx] = C ** -exp_val
+    return pathogenic_evidence_thresholds[::-1], benign_evidence_thresholds[::-1]
 
-def get_priors(dataset_name):
-    priors = []
-    for iter_result in results_dir.glob(f"iter_*/{dataset_name}"):
-        if not os.path.isfile(iter_result / "result.json"):
-            continue
-        result = read_result(iter_result)
-        priors.append(prior_from_weights(np.array(result['weights']),
-                                    controls_idx=data[dataset_name][3]))
-    return priors
+def get_score_thresholds(LR,prior,rng):
+    lr_thresholds_pathogenic , lr_thresholds_benign = thresholds_from_prior(prior=prior)
+    pathogenic_score_thresholds = np.ones(len(lr_thresholds_pathogenic)) * np.nan
+    benign_score_thresholds = np.ones(len(lr_thresholds_benign)) * np.nan
+    for strength_idx,lr_threshold in enumerate(lr_thresholds_pathogenic):
+        exceed = np.where(LR > lr_threshold)[0]
+        if len(exceed):
+            pathogenic_score_thresholds[strength_idx] = rng[max(exceed)]
+    for strength_idx,lr_threshold in enumerate(lr_thresholds_benign):
+        exceed = np.where(LR < lr_threshold)[0]
+        if len(exceed):
+            benign_score_thresholds[strength_idx] = rng[min(exceed)]
+    return pathogenic_score_thresholds,benign_score_thresholds
 
-def get_sample_density(X, dataset_name):
+def summarize_thresholds(score_thresholds,q):
+    accept = np.isnan(score_thresholds).sum(axis=0) / len(score_thresholds) < .05
+    score_thresholds = np.nanquantile(score_thresholds,q=q,axis=0)
+    score_thresholds[~accept] = np.nan
+    return score_thresholds
+
+def get_sample_density(X, results):
     densities = []
-    for iter_result in results_dir.glob(f"iter_*/{dataset_name}"):
-        result = read_result(iter_result)
+    for result in results:
         iter_densities = [density_utils.joint_densities(X, result['component_params'], result['weights'][i]).sum(0) \
                           for i in range(len(result['sample_names']))]
         densities.append(iter_densities)
     D = np.stack(densities,axis=1)
     return D
 
-def get_thresholds(dataset_name,posterior=False):
-    median_prior = np.quantile(get_priors(dataset_name),.50)
-    pathogenic_thresholds_lr,benign_thresholds_lr = thresholds_from_prior(median_prior)
-    if posterior:
-        # P = P * priors / ((P-1) * priors + 1)
-        pathogenic_thresholds = pathogenic_thresholds_lr * median_prior / ((pathogenic_thresholds_lr - 1) * median_prior + 1)
-        benign_thresholds = benign_thresholds_lr * median_prior / ((benign_thresholds_lr - 1) * median_prior + 1)
-    else:
-        pathogenic_thresholds = pathogenic_thresholds_lr
-        benign_thresholds = benign_thresholds_lr
-    return pathogenic_thresholds, benign_thresholds
-
-def thresholds_from_prior(prior):
-    C = get_tavtigian_constant(prior)
-    pathogenic_evidence_thresholds = np.ones(4) * np.nan
-    benign_evidence_thresholds = np.ones(4) * np.nan
-    for strength_idx, (i, ls, strength) in enumerate(zip(
-        1 / (2 ** np.arange(4)), ["-", "--", "-.", ":"], ["VSt", "St", "Mo", "Su"]
-    )):
-        pathogenic_evidence_thresholds[strength_idx] = C ** i
-        benign_evidence_thresholds[strength_idx] = C ** -i
-    return pathogenic_evidence_thresholds, benign_evidence_thresholds
-
-def assign_strength(scores, dataset_name,):
-    _, lrPlus_quantiles = predict(scores, dataset_name, return_quantiles=True)
-    pathogenic_thresholds, benign_thresholds = get_thresholds(dataset_name)
-    evidence = []
-    for lrP,lrB in zip(lrPlus_quantiles[0], lrPlus_quantiles[1]):
-        if lrP > pathogenic_thresholds[-1]:
-            evidence.append("PP3_VeryStrong")
-        elif lrP > pathogenic_thresholds[-2]:
-            evidence.append("PP3_Strong")
-        elif lrP > pathogenic_thresholds[-3]:
-            evidence.append("PP3_Moderate")
-        elif lrP > pathogenic_thresholds[-4]:
-            evidence.append("PP3_Supporting")
-        elif lrB < benign_thresholds[-1]:
-            evidence.append("BS3_VeryStrong")
-        elif lrB < benign_thresholds[-2]:
-            evidence.append("BS3_Strong")
-        elif lrB < benign_thresholds[-3]:
-            evidence.append("BS3_Moderate")
-        elif lrB < benign_thresholds[-4]:
-            evidence.append("BS3_Supporting")
-        else:
-            evidence.append("Intermediate")
-    return evidence
-    
-def calibration_fig(dataset_name,posterior=False):
-    X = data[dataset_name][0]
-
-    xm = X.min()
-    xM = X.max()
-    rng = np.linspace((xm // .05) * .05-.05, (xM // .05) * .05 + 0.05, 25)
-    LR = predict(rng, dataset_name, posterior=posterior,return_all=True)
-
-    fig,ax = plt.subplots(1,1,figsize=(15,5))
-    sns.boxplot(data=LR,ax=ax,palette=sns.color_palette("vlag_r",n_colors=LR.shape[1]),whis=1.5,flierprops={"alpha": 0})
-    if not posterior:
-        ax.set_yscale('log')
-    _ = ax.set_xticks(ticks=range(len(rng)),labels=list(map(lambda v: f"{v:.2f}",rng)),rotation=90)
-    ax.set_xlabel("Assay Score")
-    if not posterior:
-        ax.set_ylabel(r"$LR^+$")
-    else:
-        ax.set_ylabel(r"Posterior Probability Pathogenic")
-    pathogenic_thresholds, benign_thresholds = get_thresholds(dataset_name,posterior=posterior)
-    for tP,tB,ls in zip(pathogenic_thresholds, benign_thresholds,["-","-.","--",":"]):
-        ax.axhline(tP,ls=ls,color='r')
-        ax.axhline(tB,ls=ls,color='b')
-    if not posterior:
-        ax.set_ylim(benign_thresholds[-1] * 1e-2,pathogenic_thresholds[-1] * 1e2)
-    else:
-        ax.set_ylim(-.01,1.01)
-    return fig
-
-def fit_fig(dataset_name):
-    N_Samples = data[dataset_name][1].shape[1]
-    fig,ax = plt.subplots(N_Samples,1,figsize=(10,3*N_Samples),sharex=True,sharey=True)
-    X,S,sample_names,controls_idx = data[dataset_name]
+def fit_fig(X,S,sample_names,dataset_name,results,ax):
+    N_Samples = S.shape[1]
     std=X.std()
-    rng = np.linspace(X.min() - std,X.max() + std,1000)
+    rng = np.arange(X.min() - std,X.max() + std,.01)
     palette = sns.color_palette("pastel", N_Samples)
     palette_3 = sns.color_palette("dark", N_Samples)
     palette_2 = sns.color_palette("bright", N_Samples)
-    D = get_sample_density(rng, dataset_name)
+    D = get_sample_density(rng, results)
     sample_name_map = dict(p_lp="P/LP", b_lb="B/LB", gnomad="gnomAD", vus="VUS", synonymous="Synonymous",nonsynonymous="Nonsynonymous")
     for i in range(N_Samples):
         sns.histplot(X[S[:,i]],ax=ax[i],stat='density',color=palette[i],label=f"{sample_name_map[sample_names[i]]} (n={S[:,i].sum():,d})")
@@ -239,41 +80,165 @@ def fit_fig(dataset_name):
         q = np.nanquantile(D[i], [0.025, .975], axis=0)
         ax[i].fill_between(rng, q[0], q[1], alpha=.5, color=palette_2[i])
         ax[i].legend()
-    return fig
 
-def evidence_distr_fig(dataset_name):
-    X,S,sample_names,controls_index = data[dataset_name]
-    sample_name_map = dict(p_lp="P/LP", b_lb="B/LB", gnomad="gnomAD", vus="VUS", synonymous="Synonymous",nonsynonymous="Nonsynonymous")
-    prediction_set = {sample_name_map[k] : predict(X[S[:,i]],dataset_name) for i,k in enumerate(sample_names)}
-    obs = load_data(dataset_id=dataset_name,data_directory=data_dir,return_dict=True)
-    prediction_set['VUS'] = predict(obs['vus'],dataset_name)
+def get_lrPlus(X, control_sample_index, result, pathogenic_sample_num=0):
+    f_P = density_utils.joint_densities(X, result['component_params'],
+                                        result['weights'][pathogenic_sample_num]).sum(0)
+    f_B = density_utils.joint_densities(X, result['component_params'],
+                                        result['weights'][control_sample_index]).sum(0)
+    return f_P / f_B
 
-    sns.violinplot(prediction_set,
-                orient='h',log_scale=True, bw_adjust=.5, inner='point',palette=sns.color_palette("pastel", len(prediction_set)))
+def get_priors(results, control_sample_index):
+    priors = []
+    for result in results:
+        priors.append(prior_from_weights(np.array(result['weights']),
+                                    controls_idx=control_sample_index))
+    priors = np.array(priors)
+    # fill in nans/infs with median
+    priors[np.isnan(priors) | np.isinf(priors)] = np.nanquantile(priors,.5)
+    return priors
 
-    plt.xlabel(r"$LR^+$")
-    pathogenic_thresholds, benign_thresholds = get_thresholds(dataset_name)
-    for tP,tB,ls in zip(pathogenic_thresholds, benign_thresholds,["-","-.","--",":"]):
-        plt.axvline(tP,ls=ls,color='r',alpha=.5)
-        plt.axvline(tB,ls=ls,color='b',alpha=.5)
-    plt.gca().invert_xaxis()
-    return plt.gcf()
+def predict(X,control_sample_index,results,posterior=False, priors=None,return_quantiles=False, return_all=False):
+    lrPreds = []
+    for result in results:
+        lrPreds.append(get_lrPlus(X,control_sample_index,result))
+    P = np.stack(lrPreds)
+    if posterior:
+        assert priors is not None
+        P = P * priors / ((P-1) * priors + 1)
+    if return_all:
+        return P
+    quantiles = np.nanquantile(P, [0.25, .5, 0.75], axis=0)
+    if return_quantiles:
+        return quantiles[1], quantiles[[0,-1],:]
+    # return median
+    return quantiles[1]
 
-def main(dataset_name,save_dir):
+
+def rejection_test(X,S,sample_names,**kwargs):
+    """
+    Run the rejection test on the dataset
+
+    Parameters
+    ----------
+    X : np.ndarray (N,) : The dataset
+    S : np.ndarray (N,NSamples) : The sample labels
+    sample_names : list (NSamples,) : The sample names
+
+    Required Keyword Arguments
+    --------------------------
+    dataset_dir : str : The directory of the dataset
+    dataset_name : str : The name of the dataset
+
+    Optional Keyword Arguments
+    ----------------
+    confidence_level : float (default 0.1): The confidence level for the test
+
+    Returns
+    -------
+    bool : True if the fit is rejected, False otherwise
+    """
+    CONFIDENCE_LEVEL = kwargs.get('confidence_level',.1)
+    qmin,qmax = 100 * CONFIDENCE_LEVEL / 2, 100 * (1 - CONFIDENCE_LEVEL/2)
+    test_result = run(data_directory=kwargs['dataset_dir'],
+                        dataset_id=kwargs['dataset_name'],
+                        bootstrap=False,
+                        )
+    test_result = dict(zip(['component_params','weights','likehoods'],test_result))
+    aucs = [Parallel(n_jobs=-1)(delayed(empirical_iteration)(X[S[:,sample_num]],
+                                                                test_result['component_params'],
+                                                                test_result['weights'][sample_num]) \
+                    for _ in range(1000)) for sample_num in range(S.shape[1])]
+
+    null_aucs = [Parallel(n_jobs=-1)(delayed(null_iteration)(X[S[:,sample_num]]) \
+                    for _ in range(1000)) for sample_num in range(S.shape[1])]
+    assert len(aucs) == S.shape[1]
+    empirical_intervals = [np.percentile(aucs[sample_num], [qmin,qmax]) for sample_num,sampleName in enumerate(sample_names)]
+    null_intervals = [np.percentile(null_aucs[sample_num], [qmin,qmax]) for sample_num,sampleName in enumerate(sample_names)]
+    for sample_num,(sampleName,empirical, null) in enumerate(zip(sample_names,empirical_intervals,null_intervals)):
+        print(f"{sampleName}\n{empirical}\n{null}")
+        if empirical[1] < null[0] or empirical[0] > null[1]:
+            return True        
+    return False
+
+def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
+    """
+    Generate the calibration figure for the dataset
+
+    Parameters
+    ----------
+    dataset_name : str : The name of the dataset
+    dataset_dir : str : The directory of the datasets
+    results_dir : str : The directory of the results
+    save_dir : str : The directory to save the figure
+
+    Optional Keyword Arguments
+    --------------------------
+    debug : bool : If True, only run on the first 1000 samples
+    debug_lim : int : The number of samples to debug on
+    max_runs : int (default 10000): The maximum number of runs to use
+    """
+    # Load Data
+    dataset_dir = Path(dataset_dir)
+    with open(dataset_dir / "dataset_configs.json",'r') as f:
+        dataset_config = json.load(f)
+
     save_dir = Path(save_dir)
-    fig1 = fit_fig(dataset_name)
+    save_dir.mkdir(exist_ok=True,parents=True)
+    X,S,sample_names, control_sample_index,mu,sigma = load_data(dataset_id=dataset_name,data_directory=dataset_dir,**dataset_config[dataset_name],return_standardization=True)
+    if kwargs.get("debug",False):
+        lim = kwargs['debug_lim']
+    else:
+        lim = kwargs.get('max_runs',10000)
+    
+    # Load Results
+    results = load_results(results_dir,dataset_name,lim=lim)
+    # Calculate score thresholds
+    std = X.std()
+    rng = np.arange(X.min() - std,X.max() + std,.01)
+    LR_curves = predict(rng,control_sample_index,results,posterior=False,return_all=True)
+    priors = np.array(get_priors(results, control_sample_index))
+    thresholds_results = Parallel(n_jobs=-1,verbose=10)(delayed(get_score_thresholds)(LR,prior,rng) \
+        for LR,prior in zip(LR_curves,priors))
+    p_score_thresholds,b_score_thresholds = zip(*thresholds_results)
+    p_score_thresholds = np.stack(p_score_thresholds)
+    b_score_thresholds = np.stack(b_score_thresholds)
+
+
+    NSamples = S.shape[1]
+    fig = plt.figure(layout="constrained", figsize=(8,(NSamples) * 3))
+
+    gs = GridSpec(NSamples + 4, 1, figure=fig,)
+    topAxs = [fig.add_subplot(gs[i, 0]) for i in range(NSamples)]
+
+    fit_fig(X,S,sample_names,kwargs['dataset_name'],results,topAxs)
+
+
+    linestyles = [(0, (1,5)),'dotted','dashed','dashdot','solid']
+    for s,linestyle in zip(summarize_thresholds(p_score_thresholds,.05),linestyles):
+        if np.isnan(s):
+            continue
+        for axi in topAxs:
+            axi.axvline(s,color='r',linestyle=linestyle)
+    for s,linestyle in zip(summarize_thresholds(b_score_thresholds,.95),linestyles):
+        if np.isnan(s):
+            continue
+        for axi in topAxs:
+            axi.axvline(s,color='b',linestyle=linestyle)
+
+    ymax = float(max([axi.get_ylim()[1] for axi in topAxs]))
+    for axi in topAxs:
+        axi.set_ylim(0,ymax)
+
+    with open(save_dir / f"{dataset_name}_score_thresholds.json",'w') as f:
+        json.dump(dict(pathogenic_score_thresholds=p_score_thresholds,
+                        benign_score_thresholds=b_score_thresholds),f)
     savekwargs = dict(format='jpg',dpi=300,bbox_inches='tight')
-    fig1.savefig(save_dir / f"{dataset_name}_fit.jpg",**savekwargs)
-    plt.close(fig1)
-    fig2 = calibration_fig(dataset_name,posterior=True)
-    fig2.savefig(save_dir / f"{dataset_name}_calibration.jpg",**savekwargs)
-    plt.close(fig2)
-    fig3 = evidence_distr_fig(dataset_name)
-    fig3.savefig(save_dir / f"{dataset_name}_evidence.jpg",**savekwargs)
-    plt.close(fig3)
-    # rejection_test_results = summarize_rejection_test(dataset_name)
-    # with open(save_dir / f"{dataset_name}_rejection_test.json",'w') as f:
-    #     json.dump(rejection_test_results,f)
+    suffix = ""
+    if kwargs.get("debug",False):
+        suffix = "_debug"
+    fig.savefig(save_dir / f"{dataset_name}_calibration{suffix}.jpg",**savekwargs)
+    plt.close(fig)
 
 if __name__ == "__main__":
     Fire(main)

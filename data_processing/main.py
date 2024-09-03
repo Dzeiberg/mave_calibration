@@ -1,13 +1,14 @@
 from pathlib import Path
 import pandas as pd
 import requests
-from splice_ai import querySpliceAI
-from clinvar import getClinvar
-from gnomad import queryGnomAD
+from .splice_ai import querySpliceAI
+from .clinvar import getClinvar
+from .gnomad import queryGnomAD
 from mavehgvs import Variant
 import json
 import pickle
 from fire import Fire
+import urllib.request
 
 def process_dataset(dataset_dir, config_file, **kwargs):
     """
@@ -99,7 +100,7 @@ def filter_splice_variants(df,splice_ai_scores,cutoff=.5):
     nonsplice_mask = df.spliceAI_score < cutoff
     return df[nonsplice_mask], df[~nonsplice_mask]
 
-def get_gene_info(uniprot_acc):
+def get_gene_info(uniprot_acc, **kwargs):
     url = f"https://www.ebi.ac.uk/proteins/api/proteins/{uniprot_acc}?"
     payload = {}
     headers = {}
@@ -109,19 +110,36 @@ def get_gene_info(uniprot_acc):
     seq = json['sequence']['sequence']
     mane_record = [rec for rec in json['dbReferences'] if rec['type'] == "MANE-Select"][0]
     hgnc_id = [rec for rec in json['dbReferences'] if rec['type'] == "HGNC"][0]['id']
+    gene_id = [rec for rec in json['dbReferences'] if rec['type'] == "GeneID"][0]['id']
+    ensembl_nuc = mane_record['id']
+    ensembl_prot = mane_record['properties']['protein sequence ID']
     refseq_nuc = mane_record['properties']['RefSeq nucleotide sequence ID']
     refseq_prot = mane_record['properties']['RefSeq protein sequence ID']
     gene_name = json['gene'][0]['name']['value']
-
-    mane_gtf = pd.read_csv("https://ftp.ncbi.nlm.nih.gov/refseq/MANE/MANE_human/current/MANE.GRCh38.v1.3.ensembl_genomic.gtf.gz",
-                                sep="\t",compression='gzip',header=None)
+    cache_dir = Path(kwargs.get("cache_dir","/tmp"))
+    cache_dir.mkdir(exist_ok=True)
+    local_pth = cache_dir / "MANE.GRCh38.v1.3.ensembl_genomic.gtf.gz"
+    if not local_pth.exists():
+        urllib.request.urlretrieve("https://ftp.ncbi.nlm.nih.gov/refseq/MANE/MANE_human/current/MANE.GRCh38.v1.3.ensembl_genomic.gtf.gz",local_pth)
+    mane_gtf = pd.read_csv(local_pth, sep="\t",compression='gzip',header=None)
     mane_record = mane_gtf[(mane_gtf[2] == "gene") & \
         (mane_gtf[8].str.contains(f'gene_name "{gene_name}"',regex=False))].iloc[0]
     CHROM = mane_record[0].replace("chr","")
     START,STOP = mane_record[3],mane_record[4]
     STRAND = mane_record[6]
 
-    return dict(seq=seq,MANE_RefSeq_nuc=refseq_nuc,gene_name=gene_name,MANE_RefSeq_prot=refseq_prot,CHROM=CHROM,START=START,STOP=STOP,HGNC_ID=hgnc_id,STRAND=STRAND)
+    return dict(seq=seq,
+                MANE_RefSeq_nuc=refseq_nuc,
+                gene_name=gene_name,
+                MANE_RefSeq_prot=refseq_prot,
+                CHROM=CHROM,
+                START=START,
+                STOP=STOP,
+                HGNC_ID=hgnc_id,
+                STRAND=STRAND,
+                GeneID=gene_id,
+                ENSEMBL_nuc=ensembl_nuc,
+                ENSEMBL_prot=ensembl_prot)
 
 if __name__ == "__main__":
     Fire(process_dataset)

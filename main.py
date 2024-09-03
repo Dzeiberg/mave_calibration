@@ -84,9 +84,9 @@ def layer_distributions(X, S, weights_, params_, ax,label="",linestyle='-'):
         ax[sample_num].plot(rng, mixture_pdf, label=f"Mixture {label}",color=cmap[-1],linestyle=linestyle)
 
 
-def standardize(data,standardize_to):
+def standardize(data,standardize_to,):
     mu,sigma = data[standardize_to].mean(),data[standardize_to].std()
-    return {k: (v - mu) / sigma for k,v in data.items()}
+    return {k: (v - mu) / sigma for k,v in data.items()}, mu,sigma
 
 def load_data(**kwargs):
     """
@@ -103,6 +103,11 @@ def load_data(**kwargs):
     X -- the assay scores (N,)
     S -- the sample matrix (N,S)
     sample_names -- the sample names (S,)
+    controls_index -- the index of the control sample in the sample matrix
+
+    Optional Return Values:
+    mu -- the mean of the standardization sample
+    sigma -- the standard deviation of the standardization sample
     """
     dataset_id = kwargs.get("dataset_id")
     data_directory = kwargs.get("data_directory")
@@ -113,12 +118,16 @@ def load_data(**kwargs):
     standardize_to = config[dataset_id].get("standardize_to", None)
     if standardize_to is None:
         standardize_to = kwargs.get("standardize_to", None)
+    mu = 0
+    sigma = 1
     if standardize_to is not None:
         print("standardizing to",standardize_to)
-        data = standardize(data,standardize_to)
+        data,mu,sigma = standardize(data,standardize_to)
     if return_dict:
         return data
-    sample_names = list(config["sample_names"])
+    sample_names = kwargs.get("sample_names", None)
+    if sample_names is None:
+        sample_names = list(config["sample_names"])
     X = np.zeros((0,))
     S = np.zeros((0, len(sample_names)), dtype=bool)
     returned_samples = []
@@ -135,7 +144,10 @@ def load_data(**kwargs):
     control_sample_name = config[dataset_id].get("controls", "b_lb")
     controls_index = sample_names.index(control_sample_name)
     S = S[:,S.sum(0) > 0]
-    return X, S,returned_samples,controls_index
+    return_vals = X, S,returned_samples,controls_index
+    if kwargs.get("return_standardization",False):
+        return_vals += (mu,sigma)
+    return return_vals
 
 
 def singleFit(X, S, **kwargs):
@@ -350,14 +362,14 @@ def get_fit_statistics(X, S, sample_names, weights, component_params):
         statistics[sample_name] = dict(ks_stat=ks_stat, ks_p=ks_p, u_stat=u_stat, u_p=u_p, auc=auc)
     return statistics
 
-def save(X, S, sample_names, best_fit, bootstrap_indices,**kwargs):
+def save(X, S, loaded_sample_names, best_fit, bootstrap_indices,**kwargs):
     save_path = Path(os.path.join(kwargs.get('save_path'),
                                     kwargs.get("dataset_id")))
     save_path.mkdir(exist_ok=True, parents=True)
     component_params, weights, likelihoods = best_fit
     draw_figs = kwargs.get("draw_figs", True)
     if draw_figs:
-        pathogenic_thresholds,benign_thresholds = generate_figures(X, S, sample_names, weights, component_params, **kwargs)
+        pathogenic_thresholds,benign_thresholds = generate_figures(X, S, loaded_sample_names, weights, component_params, **kwargs)
         pathogenic_thresholds = pathogenic_thresholds.tolist()
         benign_thresholds = benign_thresholds.tolist()
     else:
@@ -369,7 +381,7 @@ def save(X, S, sample_names, best_fit, bootstrap_indices,**kwargs):
                 "weights": weights.tolist(),
                 "likelihoods": likelihoods.tolist(),
                 "config": kwargs,
-                "sample_names": sample_names,
+                "sample_names": loaded_sample_names,
                 "bootstrap_indices": bootstrap_indices,
                 "pathogenic_thresholds": pathogenic_thresholds,
                 "benign_thresholds": benign_thresholds,
