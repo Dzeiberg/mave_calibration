@@ -12,6 +12,7 @@ from tqdm import tqdm
 from joblib import Parallel, delayed
 from main import run,empirical_iteration,null_iteration
 from matplotlib.gridspec import GridSpec
+import joblib
 
 def load_results(results_dir,dataset_name,lim=None):
     results = []
@@ -74,8 +75,9 @@ def fit_fig(X,S,sample_names,dataset_name,results,ax):
     palette_2 = sns.color_palette("bright", N_Samples)
     D = get_sample_density(rng, results)
     sample_name_map = dict(p_lp="P/LP", b_lb="B/LB", gnomad="gnomAD", vus="VUS", synonymous="Synonymous",nonsynonymous="Nonsynonymous")
+    bins = np.linspace(X.min(),X.max(),25)
     for i in range(N_Samples):
-        sns.histplot(X[S[:,i]],ax=ax[i],stat='density',color=palette[i],label=f"{sample_name_map[sample_names[i]]} (n={S[:,i].sum():,d})")
+        sns.histplot(X[S[:,i]],ax=ax[i],stat='density',color=palette[i],bins=bins,label=f"{sample_name_map[sample_names[i]]} (n={S[:,i].sum():,d})")
         ax[i].plot(rng, D[i].mean(0),color=palette_3[i],)
         q = np.nanquantile(D[i], [0.025, .975], axis=0)
         ax[i].fill_between(rng, q[0], q[1], alpha=.5, color=palette_2[i])
@@ -158,8 +160,39 @@ def rejection_test(X,S,sample_names,**kwargs):
     for sample_num,(sampleName,empirical, null) in enumerate(zip(sample_names,empirical_intervals,null_intervals)):
         print(f"{sampleName}\n{empirical}\n{null}")
         if empirical[1] < null[0] or empirical[0] > null[1]:
-            return True        
-    return False
+            return True, empirical_intervals, null_intervals       
+    return False, empirical_intervals, null_intervals
+
+def get_score_threshold_mats(X,control_sample_index,results):
+    """
+    Calculate the score thresholds corresponding to each evidence strength for each bootstrap iteration
+
+    Parameters
+    ----------
+    X : np.ndarray
+        The assay scores
+    control_sample_index : np.ndarray
+        The indices of the control samples (usually 1 for B/LB or 4 for synonymous)
+    results : list of dict
+        Results from the bootstrap iterations
+
+    Returns
+    -------
+    p_score_thresholds : np.ndarray (n_bootstrap, 5)
+        score thresholds for +1, +2, +3, +4, +8 points for each bootstrap iteration
+
+    b_score_thresholds : np.ndarray (n_bootstrap, 5)
+        score thresholds for -1, -2, -3, -4, -8 points for each bootstrap iteration
+    """
+    std = X.std()
+    rng = np.arange(X.min() - std,X.max() + std,.01)
+    LR_curves = predict(rng,control_sample_index,results,posterior=False,return_all=True)
+    priors = np.array(get_priors(results, control_sample_index))
+    thresholds_results = Parallel(n_jobs=-1,verbose=10)(delayed(get_score_thresholds)(LR,prior,rng) for LR,prior in list(zip(LR_curves,priors)))
+    p_score_thresholds,b_score_thresholds = zip(*thresholds_results)
+    p_score_thresholds = np.stack(p_score_thresholds)
+    b_score_thresholds = np.stack(b_score_thresholds)
+    return p_score_thresholds,b_score_thresholds
 
 def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
     """
@@ -194,16 +227,13 @@ def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
     # Load Results
     results = load_results(results_dir,dataset_name,lim=lim)
     # Calculate score thresholds
-    std = X.std()
-    rng = np.arange(X.min() - std,X.max() + std,.01)
-    LR_curves = predict(rng,control_sample_index,results,posterior=False,return_all=True)
-    priors = np.array(get_priors(results, control_sample_index))
-    thresholds_results = Parallel(n_jobs=-1,verbose=10)(delayed(get_score_thresholds)(LR,prior,rng) \
-        for LR,prior in zip(LR_curves,priors))
-    p_score_thresholds,b_score_thresholds = zip(*thresholds_results)
-    p_score_thresholds = np.stack(p_score_thresholds)
-    b_score_thresholds = np.stack(b_score_thresholds)
-
+    if kwargs.get("reload_score_thresholds",True) and (save_dir / f"{dataset_name}_score_thresholds.pkl").exists():
+        p_score_thresholds,b_score_thresholds = joblib.load(save_dir / f"{dataset_name}_score_thresholds.pkl")
+        p_score_thresholds = np.array(p_score_thresholds)
+        b_score_thresholds = np.array(b_score_thresholds)
+    else:
+        p_score_thresholds,b_score_thresholds = get_score_threshold_mats(X,control_sample_index,results)
+        joblib.dump((p_score_thresholds.tolist(),b_score_thresholds.tolist()),save_dir / f"{dataset_name}_score_thresholds.pkl")
 
     NSamples = S.shape[1]
     fig = plt.figure(layout="constrained", figsize=(8,(NSamples) * 3))
@@ -211,28 +241,40 @@ def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
     gs = GridSpec(NSamples + 4, 1, figure=fig,)
     topAxs = [fig.add_subplot(gs[i, 0]) for i in range(NSamples)]
 
-    fit_fig(X,S,sample_names,kwargs['dataset_name'],results,topAxs)
-
-
+    fit_fig(X,S,sample_names,dataset_name,results,topAxs)
     linestyles = [(0, (1,5)),'dotted','dashed','dashdot','solid']
-    for s,linestyle in zip(summarize_thresholds(p_score_thresholds,.05),linestyles):
+    final_thresholds_p = summarize_thresholds(p_score_thresholds,.05)
+    final_thresholds_b = summarize_thresholds(b_score_thresholds,.95)
+    legend_items = []
+    for s,linestyle,label in zip(final_thresholds_p,linestyles,['+1','+2','+3','+4','+8']):
         if np.isnan(s):
             continue
-        for axi in topAxs:
-            axi.axvline(s,color='r',linestyle=linestyle)
-    for s,linestyle in zip(summarize_thresholds(b_score_thresholds,.95),linestyles):
+        for i,axi in enumerate(topAxs):
+            itm = axi.axvline(s,color='r',linestyle=linestyle,label=label)
+            if i == 0:
+                legend_items.append(itm)
+    
+    for s,linestyle,label in zip(final_thresholds_b,linestyles,['-1','-2','-3','-4','-8']):
         if np.isnan(s):
             continue
-        for axi in topAxs:
-            axi.axvline(s,color='b',linestyle=linestyle)
-
+        for i,axi in enumerate(topAxs):
+            itm = axi.axvline(s,color='b',linestyle=linestyle,label=label)
+            if i == 0:
+                legend_items.append(itm)
+    # plt.legend(handles=legend_items, loc='upper left', bbox_to_anchor=(1, 4))
     ymax = float(max([axi.get_ylim()[1] for axi in topAxs]))
     for axi in topAxs:
         axi.set_ylim(0,ymax)
-
-    with open(save_dir / f"{dataset_name}_score_thresholds.json",'w') as f:
-        json.dump(dict(pathogenic_score_thresholds=p_score_thresholds,
-                        benign_score_thresholds=b_score_thresholds),f)
+    fit_rejected,empirical_interval,null_interval = rejection_test(X,S,sample_names,dataset_dir=dataset_dir,dataset_name=dataset_name)
+    summary = dict(pathogenic_score_thresholds=final_thresholds_p.tolist(),
+                        benign_score_thresholds=final_thresholds_b.tolist(),
+                        fit_rejected=fit_rejected,
+                        empirical_interval=list(map(lambda a: list(a),
+                                                        empirical_interval)),
+                        null_interval=list(map(lambda a: list(a),
+                                                null_interval)))
+    with open(save_dir / f"{dataset_name}.json",'w') as f:
+        json.dump(summary,f)
     savekwargs = dict(format='jpg',dpi=300,bbox_inches='tight')
     suffix = ""
     if kwargs.get("debug",False):
