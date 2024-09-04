@@ -194,6 +194,12 @@ def get_score_threshold_mats(X,control_sample_index,results):
     b_score_thresholds = np.stack(b_score_thresholds)
     return p_score_thresholds,b_score_thresholds
 
+def count_violations(X,S,sample_names,final_thresholds_p,final_thresholds_b):
+    sample_map = dict(zip(sample_names,range(len(sample_names))))
+    p_lp_violations = (X[S[:,sample_map['p_lp']]] > final_thresholds_b[0]).sum()
+    b_lb_violations = (X[S[:,sample_map['b_lb']]] < final_thresholds_p[0]).sum()
+    return p_lp_violations, b_lb_violations
+
 def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
     """
     Generate the calibration figure for the dataset
@@ -265,14 +271,18 @@ def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
     ymax = float(max([axi.get_ylim()[1] for axi in topAxs]))
     for axi in topAxs:
         axi.set_ylim(0,ymax)
-    fit_rejected,empirical_interval,null_interval = rejection_test(X,S,sample_names,dataset_dir=dataset_dir,dataset_name=dataset_name)
+    p_lp_violations, b_lb_violations = count_violations(X,S,sample_names,final_thresholds_p,final_thresholds_b)
+    rejected = False
+    if (p_lp_violations / S[:,sample_names.index('p_lp')].sum() > .10) or \
+        (b_lb_violations / S[:,sample_names.index('b_lb')].sum() > .10):
+        rejected = True
     summary = dict(pathogenic_score_thresholds=final_thresholds_p.tolist(),
                         benign_score_thresholds=final_thresholds_b.tolist(),
-                        fit_rejected=fit_rejected,
-                        empirical_interval=list(map(lambda a: list(a),
-                                                        empirical_interval)),
-                        null_interval=list(map(lambda a: list(a),
-                                                null_interval)))
+                        p_lp_violations=int(p_lp_violations),
+                        frac_p_lp_violations=p_lp_violations / S[:,sample_names.index('p_lp')].sum(),
+                        b_lb_violations=int(b_lb_violations),
+                        frac_b_lb_violations=b_lb_violations / S[:,sample_names.index('b_lb')].sum(),
+                        rejected=rejected)
     with open(save_dir / f"{dataset_name}.json",'w') as f:
         json.dump(summary,f)
     savekwargs = dict(format='jpg',dpi=300,bbox_inches='tight')

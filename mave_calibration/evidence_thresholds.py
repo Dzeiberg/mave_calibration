@@ -155,10 +155,11 @@ def likelybenignRulesPosterior(e, alpha, original):
     # supported in the rule. For example, the rule supports
     # and 1 supporting and 1 strong evidence.
     v[0] = locallrPlus2Posterior(e**(np.dot([1,0,1,0],fracs)), alpha)
-    if original:
-        # The original rules consider 2 supporting lines of evidence as likely benign.
-        # This rule is not included in the modified rules.
-        v[1] = locallrPlus2Posterior(e**(np.dot([2,0,0,0],fracs)), alpha)
-    else:
-        v = v[:1]
+    v[1] = locallrPlus2Posterior(e**(np.dot([2,0,0,0],fracs)), alpha)
+    # if original:
+    #     # The original rules consider 2 supporting lines of evidence as likely benign.
+    #     # This rule is not included in the modified rules.
+        
+    # else:
+    #     v = v[:1]
     return v
