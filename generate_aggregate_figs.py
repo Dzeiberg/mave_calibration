@@ -29,9 +29,13 @@ def load_results(results_dir,dataset_name,lim=None):
 
 def thresholds_from_prior(prior, point_values=[1,2,3,4,8]):
     exp_vals = 1 / np.array(point_values).astype(float)
-    C = get_tavtigian_constant(prior)
+    C,num_successes = get_tavtigian_constant(prior,return_success_count=True)
+    # max number of successes is 17
+    max_successes = 17
     pathogenic_evidence_thresholds = np.ones(len(point_values)) * np.nan
     benign_evidence_thresholds = np.ones(len(point_values)) * np.nan
+    if num_successes < max_successes:
+        return pathogenic_evidence_thresholds, benign_evidence_thresholds
     for strength_idx, exp_val in enumerate(exp_vals):
         pathogenic_evidence_thresholds[strength_idx] = C ** exp_val
         benign_evidence_thresholds[strength_idx] = C ** -exp_val
@@ -42,16 +46,21 @@ def get_score_thresholds(LR,prior,rng):
     pathogenic_score_thresholds = np.ones(len(lr_thresholds_pathogenic)) * np.nan
     benign_score_thresholds = np.ones(len(lr_thresholds_benign)) * np.nan
     for strength_idx,lr_threshold in enumerate(lr_thresholds_pathogenic):
+        if lr_threshold is np.nan:
+            continue
         exceed = np.where(LR > lr_threshold)[0]
         if len(exceed):
             pathogenic_score_thresholds[strength_idx] = rng[max(exceed)]
     for strength_idx,lr_threshold in enumerate(lr_thresholds_benign):
+        if lr_threshold is np.nan:
+            continue
         exceed = np.where(LR < lr_threshold)[0]
         if len(exceed):
             benign_score_thresholds[strength_idx] = rng[min(exceed)]
     return pathogenic_score_thresholds,benign_score_thresholds
 
 def summarize_thresholds(score_thresholds,q):
+    # meets threshold in at least 95% of iterations
     accept = np.isnan(score_thresholds).sum(axis=0) / len(score_thresholds) < .05
     score_thresholds = np.nanquantile(score_thresholds,q=q,axis=0)
     score_thresholds[~accept] = np.nan

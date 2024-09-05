@@ -1,4 +1,5 @@
 import numpy as np
+from typing import List
 
 def get_tavtigian_constant(prior : float, *args, **kwargs) -> float|int:
     original = kwargs.get('original',False)
@@ -41,6 +42,54 @@ def get_tavtigian_constant(prior : float, *args, **kwargs) -> float|int:
         successes = (likely_pathogenic_posteriors.shape[1] + pathogenic_posteriors.shape[1] + likely_benign_posteriors.shape[1] + benign_posteriors.shape[1]) - fails[star_idx]
         return C_star, successes
     return C_star
+
+
+def get_dual_constants(prior : float, *args, **kwargs) -> List[float|int]:
+    original = kwargs.get('original',False)
+    strict = kwargs.get("strict", False)
+    C_max = kwargs.get('C_max',30000)
+    verbose = kwargs.get('verbose',False)
+    C_valsP = np.arange(1,C_max+1)
+    pathogenic_posteriors = np.round(np.stack(list(map(lambda C: pathogenicRulesPosterior(C, prior, original),
+                                              C_valsP)), axis=0),3)
+    pathogenic_fails = np.sum(pathogenic_posteriors < 0.99,axis=1)
+
+
+    likely_pathogenic_posteriors = np.round(np.stack(list(map(lambda C: likelyPathogenicRulesPosterior(C, prior, original),
+                                                     C_valsP)), axis=0),3)
+    lp_mask = (likely_pathogenic_posteriors < 0.90)
+    if strict:
+        lp_mask = lp_mask | (likely_pathogenic_posteriors > 0.99)
+    likely_pathogenic_fails = np.sum(lp_mask,axis=1)
+    
+    C_valsB = np.arange(1,C_max+1)
+    benign_posteriors = np.round(np.stack(list(map(lambda C: benignRulesPosterior(C, prior),
+                                            C_valsB)), axis=0),3)
+    benign_fails = np.sum(benign_posteriors > 0.01,axis=1)
+
+    likely_benign_posteriors = np.round(np.stack(list(map(lambda C: likelybenignRulesPosterior(C, prior, original),
+                                                    C_valsB)), axis=0),3)
+
+    lb_mask = (likely_benign_posteriors > 0.10)
+    if strict:
+        lb_mask = lb_mask | (likely_benign_posteriors < 0.01)
+    likely_benign_fails = np.sum(lb_mask,axis=1)
+
+    # Find the best pair of constants
+    failsP = pathogenic_fails + likely_pathogenic_fails
+    failsB = benign_fails + likely_benign_fails
+    star_idxP = np.argmin(failsP)
+    star_idxB = np.argmin(failsB)
+    C_starP = C_valsP[star_idxP]
+    C_starB = C_valsB[star_idxB]
+    if kwargs.get('return_success_count',False):
+        successes = (likely_pathogenic_posteriors.shape[1] + \
+                        pathogenic_posteriors.shape[1] + \
+                        likely_benign_posteriors.shape[1] + \
+                        benign_posteriors.shape[1]) - \
+                    failsP[star_idxP] - failsB[star_idxB]
+        return C_starP, C_starB, successes
+    return C_starP, C_starB
 
 def pathogenicRulesPosterior(C : int , prior : float , original : bool) -> np.ndarray:
     fracs = [2**-3, 2**-2, 2**-1, 1]
