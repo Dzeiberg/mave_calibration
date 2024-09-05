@@ -80,7 +80,7 @@ def get_sample_density(X, results):
     D = np.stack(densities,axis=1)
     return D
 
-def fit_fig(X,S,sample_names,dataset_name,results,ax):
+def fit_fig(X,S,sample_names,dataset_name,results,ax, priors):
     N_Samples = S.shape[1]
     std=X.std()
     rng = np.arange(X.min() - std,X.max() + std,.01)
@@ -91,7 +91,11 @@ def fit_fig(X,S,sample_names,dataset_name,results,ax):
     sample_name_map = dict(p_lp="P/LP", b_lb="B/LB", gnomad="gnomAD", vus="VUS", synonymous="Synonymous",nonsynonymous="Nonsynonymous")
     bins = np.linspace(X.min(),X.max(),25)
     for i in range(N_Samples):
-        sns.histplot(X[S[:,i]],ax=ax[i],stat='density',color=palette[i],bins=bins,label=f"{sample_name_map[sample_names[i]]} (n={S[:,i].sum():,d})")
+        name = sample_name_map[sample_names[i]]
+        label = f"{name} (n={S[:,i].sum():,d})"
+        if name == "gnomAD":
+            label += f" (median prior={np.quantile(priors,.5):.2f})"
+        sns.histplot(X[S[:,i]],ax=ax[i],stat='density',color=palette[i],bins=bins,label=label)
         ax[i].plot(rng, D[i].mean(0),color=palette_3[i],)
         q = np.nanquantile(D[i], [0.025, .975], axis=0)
         ax[i].fill_between(rng, q[0], q[1], alpha=.5, color=palette_2[i])
@@ -262,7 +266,7 @@ def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
     gs = GridSpec(NSamples + 4, 1, figure=fig,)
     topAxs = [fig.add_subplot(gs[i, 0]) for i in range(NSamples)]
 
-    fit_fig(X,S,sample_names,dataset_name,results,topAxs)
+    fit_fig(X,S,sample_names,dataset_name,results,topAxs, priors)
     linestyles = [(0, (1,5)),'dotted','dashed','dashdot','solid']
     qp = kwargs.get('qp',.05)
     qb = kwargs.get('qb',.95)
