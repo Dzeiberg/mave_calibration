@@ -266,8 +266,8 @@ def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
 
     fit_fig(X,S,sample_names,dataset_name,results,topAxs)
     linestyles = [(0, (1,5)),'dotted','dashed','dashdot','solid']
-    final_thresholds_p = summarize_thresholds(p_score_thresholds,0,X[S[:,sample_names.index('b_lb')],:],'lt')
-    final_thresholds_b = summarize_thresholds(b_score_thresholds,1, X[S[:,sample_names.index('p_lp')],:],'gt')
+    final_thresholds_p = summarize_thresholds(p_score_thresholds,0,X[S[:,sample_names.index('b_lb')]],'lt')
+    final_thresholds_b = summarize_thresholds(b_score_thresholds,1, X[S[:,sample_names.index('p_lp')]],'gt')
     legend_items = []
     for s,linestyle,label in zip(final_thresholds_p,linestyles,['+1','+2','+3','+4','+8']):
         if np.isnan(s):
