@@ -59,11 +59,18 @@ def get_score_thresholds(LR,prior,rng):
             benign_score_thresholds[strength_idx] = rng[min(exceed)]
     return pathogenic_score_thresholds,benign_score_thresholds
 
-def summarize_thresholds(score_thresholds,q):
+def summarize_thresholds(score_thresholds,q,X,direction):
+    # accept_thresholds = np.ones(score_thresholds.shape[0],dtype=bool) * True
+    # for i,score_supporting in enumerate(score_thresholds):
+    #     if np.isnan(score_supporting) or \
+    #         (direction == 'gt' and ((X > score_supporting).sum() / len(X)) > .10) or \
+    #         (direction == 'lt' and ((X < score_supporting).sum() / len(X)) > .10):
+    #         accept_thresholds[i] = False
+    
     # meets threshold in at least 95% of iterations
-    accept = np.isnan(score_thresholds).sum(axis=0) / len(score_thresholds) < .05
+    accept_evidence_strength = np.isnan(score_thresholds).sum(axis=0) / len(score_thresholds) < .05
     score_thresholds = np.nanquantile(score_thresholds,q=q,axis=0)
-    score_thresholds[~accept] = np.nan
+    score_thresholds[~accept_evidence_strength] = np.nan
     return score_thresholds
 
 def get_sample_density(X, results):
@@ -259,8 +266,8 @@ def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
 
     fit_fig(X,S,sample_names,dataset_name,results,topAxs)
     linestyles = [(0, (1,5)),'dotted','dashed','dashdot','solid']
-    final_thresholds_p = summarize_thresholds(p_score_thresholds,.05)
-    final_thresholds_b = summarize_thresholds(b_score_thresholds,.95)
+    final_thresholds_p = summarize_thresholds(p_score_thresholds,0,X[S[:,sample_names.index('b_lb')],:],'lt')
+    final_thresholds_b = summarize_thresholds(b_score_thresholds,1, X[S[:,sample_names.index('p_lp')],:],'gt')
     legend_items = []
     for s,linestyle,label in zip(final_thresholds_p,linestyles,['+1','+2','+3','+4','+8']):
         if np.isnan(s):
