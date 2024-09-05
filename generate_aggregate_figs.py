@@ -192,7 +192,7 @@ def get_score_threshold_mats(X,control_sample_index,results):
     p_score_thresholds,b_score_thresholds = zip(*thresholds_results)
     p_score_thresholds = np.stack(p_score_thresholds)
     b_score_thresholds = np.stack(b_score_thresholds)
-    return p_score_thresholds,b_score_thresholds
+    return p_score_thresholds,b_score_thresholds, priors
 
 def count_violations(X,S,sample_names,final_thresholds_p,final_thresholds_b):
     sample_map = dict(zip(sample_names,range(len(sample_names))))
@@ -234,12 +234,13 @@ def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
     results = load_results(results_dir,dataset_name,lim=lim)
     # Calculate score thresholds
     if kwargs.get("reload_score_thresholds",True) and (save_dir / f"{dataset_name}_score_thresholds.pkl").exists():
-        p_score_thresholds,b_score_thresholds = joblib.load(save_dir / f"{dataset_name}_score_thresholds.pkl")
+        p_score_thresholds,b_score_thresholds,priors = joblib.load(save_dir / f"{dataset_name}_score_thresholds.pkl")
         p_score_thresholds = np.array(p_score_thresholds)
         b_score_thresholds = np.array(b_score_thresholds)
+        priors = np.array(priors)
     else:
-        p_score_thresholds,b_score_thresholds = get_score_threshold_mats(X,control_sample_index,results)
-        joblib.dump((p_score_thresholds.tolist(),b_score_thresholds.tolist()),save_dir / f"{dataset_name}_score_thresholds.pkl")
+        p_score_thresholds,b_score_thresholds,priors = get_score_threshold_mats(X,control_sample_index,results)
+        joblib.dump((p_score_thresholds.tolist(),b_score_thresholds.tolist(),priors.tolist()),save_dir / f"{dataset_name}_score_thresholds.pkl")
 
     NSamples = S.shape[1]
     fig = plt.figure(layout="constrained", figsize=(8,(NSamples) * 3))
@@ -282,7 +283,11 @@ def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
                         frac_p_lp_violations=p_lp_violations / S[:,sample_names.index('p_lp')].sum(),
                         b_lb_violations=int(b_lb_violations),
                         frac_b_lb_violations=b_lb_violations / S[:,sample_names.index('b_lb')].sum(),
-                        rejected=rejected)
+                        rejected=rejected,
+                        min_prior=float(priors.min()),
+                        max_prior=float(priors.max()),
+                        mean_prior=float(priors.mean()),
+                        median_prior=float(np.quantile(priors,.5)))
     with open(save_dir / f"{dataset_name}.json",'w') as f:
         json.dump(summary,f)
     savekwargs = dict(format='jpg',dpi=300,bbox_inches='tight')

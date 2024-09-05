@@ -37,7 +37,9 @@ def get_tavtigian_constant(prior : float, *args, **kwargs) -> float|int:
         print(pathogenic_posteriors[star_idx])
         print(likely_benign_posteriors[star_idx])
         print(benign_posteriors[star_idx])
-
+    if kwargs.get('return_success_count',False):
+        successes = (likely_pathogenic_posteriors.shape[1] + pathogenic_posteriors.shape[1] + likely_benign_posteriors.shape[1] + benign_posteriors.shape[1]) - fails[star_idx]
+        return C_star, successes
     return C_star
 
 def pathogenicRulesPosterior(C : int , prior : float , original : bool) -> np.ndarray:
