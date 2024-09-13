@@ -5,6 +5,7 @@ from sklearn.mixture import GaussianMixture
 from sklearn.cluster import KMeans
 import numpy as np
 from tqdm import trange
+import logging
 
 def fit_gmm(X,**kwargs):
     """
@@ -55,7 +56,8 @@ def constrained_gmm_init(X, **kwargs):
     Density Constrained initialization of the skew normal mixture model using GMM and the skew-normal method of moments
     """
     n_components = kwargs.get("n_components", 2)
-    assert n_components == 2
+    if n_components != 2:
+        logging.warning(f"Density constraint only enforced for first two components; {n_components} components requested")
     n_inits = kwargs.get("n_inits", 10)
     X = np.array(X).reshape((-1, 1))
     buffer_stds = kwargs.get("buffer_stds", 1)
@@ -78,26 +80,31 @@ def constrained_gmm_init(X, **kwargs):
 
             params = fit_skew_normal(X_component)
             component_parameters.append(params)
-        for _ in range(100):
-            if not density_constraint_violated(
+        rep_failed = False
+        for compI, compJ in zip(range(0,n_components-1),range(1,n_components)):
+            for _ in range(100):
+                if not density_constraint_violated(
+                    component_parameters[0], component_parameters[1], xlims
+                ):
+                    break
+                larger_comp_index = np.argmax([max(abs(p[0]),p[2]) for p in component_parameters[:2]])
+                if abs(component_parameters[larger_comp_index][0]) > component_parameters[larger_comp_index][2]:
+                    # print(f"scaling down a of comp {larger_comp_index}")
+                    component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * -.9,
+                                                                component_parameters[larger_comp_index][1],
+                                                                component_parameters[larger_comp_index][2]]
+                else:
+                    # print(f"scaling down scale of comp {larger_comp_index}")
+                    component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0],
+                                                                component_parameters[larger_comp_index][1],
+                                                                component_parameters[larger_comp_index][2] * .9]
+            if density_constraint_violated(
                 component_parameters[0], component_parameters[1], xlims
             ):
+                print(f"init {rep} failed; final parameters: {component_parameters[0]}\t{component_parameters[1]}")
+                rep_failed = True
                 break
-            larger_comp_index = np.argmax([max(abs(p[0]),p[2]) for p in component_parameters])
-            if abs(component_parameters[larger_comp_index][0]) > component_parameters[larger_comp_index][2]:
-                # print(f"scaling down a of comp {larger_comp_index}")
-                component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * -.9,
-                                                            component_parameters[larger_comp_index][1],
-                                                            component_parameters[larger_comp_index][2]]
-            else:
-                # print(f"scaling down scale of comp {larger_comp_index}")
-                component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0],
-                                                            component_parameters[larger_comp_index][1],
-                                                            component_parameters[larger_comp_index][2] * .9]
-        if density_constraint_violated(
-            component_parameters[0], component_parameters[1], xlims
-        ):
-            print(f"init {rep} failed; final parameters: {component_parameters[0]}\t{component_parameters[1]}")
+        if rep_failed:
             continue
         LL = get_LL(X, component_parameters, comp_weights)
         if LL > BestLL:

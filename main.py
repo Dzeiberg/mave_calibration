@@ -124,7 +124,11 @@ def load_data(**kwargs):
         print("standardizing to",standardize_to)
         data,mu,sigma = standardize(data,standardize_to)
     if return_dict:
-        return data
+        hgvs_pro = joblib.load(os.path.join(data_directory, dataset_id, "hgvs_pro.pkl"))
+        if config[dataset_id]["invert"]:
+            data = {k: -v for k,v in data.items()}
+        
+        return dict(scores=data,hgvs_pro=hgvs_pro)
     sample_names = kwargs.get("sample_names", None)
     if sample_names is None:
         sample_names = list(config["sample_names"])

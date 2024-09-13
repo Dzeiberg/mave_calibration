@@ -1,9 +1,9 @@
 from pathlib import Path
 import pandas as pd
 import requests
-from .splice_ai import querySpliceAI
-from .clinvar import getClinvar
-from .gnomad import queryGnomAD
+from data_processing.splice_ai import querySpliceAI
+from data_processing.clinvar import getClinvar
+from data_processing.gnomad import queryGnomAD
 from mavehgvs import Variant
 import json
 import pickle
@@ -36,7 +36,7 @@ def process_dataset(dataset_dir, config_file, **kwargs):
     gene_info = get_gene_info(uniprot_acc)
     scoreset = read_scoreset(scoreset_file)
     scoreset = remove_nonsense(scoreset)
-    region_splice_ai_scores = querySpliceAI(gene_info['CHROM'],gene_info['START'],gene_info['STOP'],**config['splice_ai'],write_dir=dataset_dir)
+    region_splice_ai_scores = querySpliceAI(gene_info['CHROM'],gene_info['START'],gene_info['STOP'],**config['splice_ai'],assembly='hg38',write_dir=dataset_dir)
     
     clinvar = getClinvar(**config['clinvar'])
     clinvar = clinvar[clinvar.transcript == gene_info['MANE_RefSeq_nuc']]
@@ -61,7 +61,9 @@ def read_scoreset(scoreset_file):
     assert 'score' in scoreset.columns, "score column not found in scoreset"
     assert 'hgvs_pro' in scoreset.columns, "hgvs_pro column not found in scoreset"
     is_synonymous = scoreset.hgvs_pro.apply(lambda x: Variant(x).is_synonymous() or x[2:5] == x[-3:])
-    scoreset = scoreset.assign(synonymous=is_synonymous)
+    is_nonsense = scoreset.hgvs_pro.apply(lambda x: Variant(x).sequence[-1] == "Ter")
+    scoreset = scoreset.assign(synonymous=is_synonymous,
+                               nonsense=is_nonsense)
     return scoreset
 
 def remove_nonsense(scoreset):

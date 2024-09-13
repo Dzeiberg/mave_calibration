@@ -22,6 +22,8 @@ def querySpliceAI(chrom, position_min, position_max,**kwargs):
         write_dir = Path(kwargs.get('write_dir',"/tmp"))
         write_dir.mkdir(exist_ok=True)
         spliceAIFilePath = Path(kwargs.get('spliceAIFilePath'))
+        assembly = kwargs.get("assembly")
+        assert assembly in ['hg38','hg19'], "assembly must be one of ['hg38','hg19']"
         assert spliceAIFilePath.exists(), "spliceAIFilePath does not exist"
         output_filepath = write_dir / f'splice_ai_query_result.{str(datetime.now()).replace(" ","_")}.vcf'
         cmd = f"gatk SelectVariants -V {spliceAIFilePath} -L {chrom}:{max(position_min,1)}-{position_max} --output {output_filepath}"
@@ -31,4 +33,5 @@ def querySpliceAI(chrom, position_min, position_max,**kwargs):
                             dtype={k : str for k in 'CHROM POS REF ALT'.split(" ")})
         result_df = result_df.assign(spliceAI_score=result_df.INFO.apply(lambda s: max(list(map(float,
                                                                                             s.split("|")[2:6])))))
+        result_df.to_csv(write_dir / f"splice_ai_match_{assembly}_CHR{chrom}_{position_min}_{position_max}.tsv",sep='\t',index=False)
         return result_df
