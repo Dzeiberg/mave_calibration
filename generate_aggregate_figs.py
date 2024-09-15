@@ -10,21 +10,18 @@ from main import prior_from_weights
 from mave_calibration.evidence_thresholds import get_tavtigian_constant
 from tqdm import tqdm
 from joblib import Parallel, delayed
-from main import run,empirical_iteration,null_iteration
 from matplotlib.gridspec import GridSpec
 import joblib
 
-def load_results(results_dir,dataset_name,lim=None):
+def load_results(*args):
     results = []
-    results_dir = Path(results_dir)
-    for i,r_dir in tqdm(enumerate(results_dir.glob(f"iter_*/{dataset_name}"))):
-        if not (r_dir / "result.json").exists():
+    for i,result_file in tqdm(enumerate(args)):
+        result_file = Path(result_file)
+        if not result_file.exists():
             continue
-        with open(r_dir / "result.json") as f:
+        with open(result_file) as f:
             result = json.load(f)
         results.append(result)
-        if lim is not None and i == lim:
-            break
     return results
 
 def thresholds_from_prior(prior, point_values=[1,2,3,4,8]):
@@ -88,10 +85,9 @@ def fit_fig(X,S,sample_names,dataset_name,results,ax, priors):
     palette_3 = sns.color_palette("dark", N_Samples)
     palette_2 = sns.color_palette("bright", N_Samples)
     D = get_sample_density(rng, results)
-    sample_name_map = dict(p_lp="P/LP", b_lb="B/LB", gnomad="gnomAD", vus="VUS", synonymous="Synonymous",nonsynonymous="Nonsynonymous")
     bins = np.linspace(X.min(),X.max(),25)
     for i in range(N_Samples):
-        name = sample_name_map[sample_names[i]]
+        name = sample_names[i]
         label = f"{name} (n={S[:,i].sum():,d})"
         if name == "gnomAD":
             label += f" (median prior={np.quantile(priors,.5):.2f})"
@@ -134,53 +130,6 @@ def predict(X,control_sample_index,results,posterior=False, priors=None,return_q
     # return median
     return quantiles[1]
 
-
-def rejection_test(X,S,sample_names,**kwargs):
-    """
-    Run the rejection test on the dataset
-
-    Parameters
-    ----------
-    X : np.ndarray (N,) : The dataset
-    S : np.ndarray (N,NSamples) : The sample labels
-    sample_names : list (NSamples,) : The sample names
-
-    Required Keyword Arguments
-    --------------------------
-    dataset_dir : str : The directory of the dataset
-    dataset_name : str : The name of the dataset
-
-    Optional Keyword Arguments
-    ----------------
-    confidence_level : float (default 0.1): The confidence level for the test
-
-    Returns
-    -------
-    bool : True if the fit is rejected, False otherwise
-    """
-    CONFIDENCE_LEVEL = kwargs.get('confidence_level',.1)
-    qmin,qmax = 100 * CONFIDENCE_LEVEL / 2, 100 * (1 - CONFIDENCE_LEVEL/2)
-    test_result = run(data_directory=kwargs['dataset_dir'],
-                        dataset_id=kwargs['dataset_name'],
-                        bootstrap=False,
-                        )
-    test_result = dict(zip(['component_params','weights','likehoods'],test_result))
-    aucs = [Parallel(n_jobs=-1)(delayed(empirical_iteration)(X[S[:,sample_num]],
-                                                                test_result['component_params'],
-                                                                test_result['weights'][sample_num]) \
-                    for _ in range(1000)) for sample_num in range(S.shape[1])]
-
-    null_aucs = [Parallel(n_jobs=-1)(delayed(null_iteration)(X[S[:,sample_num]]) \
-                    for _ in range(1000)) for sample_num in range(S.shape[1])]
-    assert len(aucs) == S.shape[1]
-    empirical_intervals = [np.percentile(aucs[sample_num], [qmin,qmax]) for sample_num,sampleName in enumerate(sample_names)]
-    null_intervals = [np.percentile(null_aucs[sample_num], [qmin,qmax]) for sample_num,sampleName in enumerate(sample_names)]
-    for sample_num,(sampleName,empirical, null) in enumerate(zip(sample_names,empirical_intervals,null_intervals)):
-        print(f"{sampleName}\n{empirical}\n{null}")
-        if empirical[1] < null[0] or empirical[0] > null[1]:
-            return True, empirical_intervals, null_intervals       
-    return False, empirical_intervals, null_intervals
-
 def get_score_threshold_mats(X,control_sample_index,results):
     """
     Calculate the score thresholds corresponding to each evidence strength for each bootstrap iteration
@@ -214,42 +163,44 @@ def get_score_threshold_mats(X,control_sample_index,results):
 
 def count_violations(X,S,sample_names,final_thresholds_p,final_thresholds_b):
     sample_map = dict(zip(sample_names,range(len(sample_names))))
-    p_lp_violations = (X[S[:,sample_map['p_lp']]] > final_thresholds_b[0]).sum()
-    b_lb_violations = (X[S[:,sample_map['b_lb']]] < final_thresholds_p[0]).sum()
+    p_lp_violations = (X[S[:,sample_map['P/LP']]] > final_thresholds_b[0]).sum()
+    b_lb_violations = (X[S[:,sample_map['B/LB']]] < final_thresholds_p[0]).sum()
     return p_lp_violations, b_lb_violations
 
-def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
+def main(*args,**kwargs):
     """
     Generate the calibration figure for the dataset
 
-    Parameters
+    Required Keyword Arguments
     ----------
-    dataset_name : str : The name of the dataset
-    dataset_dir : str : The directory of the datasets
-    results_dir : str : The directory of the results
-    save_dir : str : The directory to save the figure
+    data_filepath : str
+        The path to the data file (csv) containing columns sample_name, score for each observation
+    dataset_name : str :
+        The name of the dataset
+    save_dir : str :
+        The directory to save the figure
+    config_file : str :
+        The path to the config file containing User-specific parameters
 
     Optional Keyword Arguments
     --------------------------
-    debug : bool : If True, only run on the first 1000 samples
-    debug_lim : int : The number of samples to debug on
-    max_runs : int (default 10000): The maximum number of runs to use
+    data_config_filepath : str (default None)
     """
     # Load Data
-    dataset_dir = Path(dataset_dir)
-    with open(dataset_dir / "dataset_configs.json",'r') as f:
-        dataset_config = json.load(f)
+    config_filepath = Path(kwargs['config_file'])
+    if not config_filepath.exists():
+        raise FileNotFoundError(f"Config file {config_filepath} not found")
+    with open(config_filepath,'r') as f:
+        config = json.load(f)
 
-    save_dir = Path(save_dir)
+    save_dir = Path(kwargs['save_dir'])
     save_dir.mkdir(exist_ok=True,parents=True)
-    X,S,sample_names, control_sample_index,mu,sigma = load_data(dataset_id=dataset_name,data_directory=dataset_dir,**dataset_config[dataset_name],return_standardization=True)
-    if kwargs.get("debug",False):
-        lim = kwargs['debug_lim']
-    else:
-        lim = kwargs.get('max_runs',10000)
+    X,S,sample_names = load_data(data_filepath=kwargs['data_filepath'],)
     
     # Load Results
-    results = load_results(results_dir,dataset_name,lim=lim)
+    results = load_results(*args)
+    dataset_name = kwargs['dataset_name']
+    control_sample_index = sample_names.index(config[dataset_name]['controls'])
     # Calculate score thresholds
     if kwargs.get("reload_score_thresholds",True) and (save_dir / f"{dataset_name}_score_thresholds.pkl").exists():
         p_score_thresholds,b_score_thresholds,priors = joblib.load(save_dir / f"{dataset_name}_score_thresholds.pkl")
@@ -294,15 +245,15 @@ def main(dataset_name,dataset_dir,results_dir,save_dir,**kwargs):
         axi.set_ylim(0,ymax)
     p_lp_violations, b_lb_violations = count_violations(X,S,sample_names,final_thresholds_p,final_thresholds_b)
     rejected = False
-    if (p_lp_violations / S[:,sample_names.index('p_lp')].sum() > .10) or \
-        (b_lb_violations / S[:,sample_names.index('b_lb')].sum() > .10):
+    if (p_lp_violations / S[:,sample_names.index('P/LP')].sum() > .10) or \
+        (b_lb_violations / S[:,sample_names.index('B/LB')].sum() > .10):
         rejected = True
     summary = dict(pathogenic_score_thresholds=final_thresholds_p.tolist(),
                         benign_score_thresholds=final_thresholds_b.tolist(),
                         p_lp_violations=int(p_lp_violations),
-                        frac_p_lp_violations=p_lp_violations / S[:,sample_names.index('p_lp')].sum(),
+                        frac_p_lp_violations=p_lp_violations / S[:,sample_names.index('P/LP')].sum(),
                         b_lb_violations=int(b_lb_violations),
-                        frac_b_lb_violations=b_lb_violations / S[:,sample_names.index('b_lb')].sum(),
+                        frac_b_lb_violations=b_lb_violations / S[:,sample_names.index('B/LB')].sum(),
                         rejected=rejected,
                         min_prior=float(priors.min()),
                         max_prior=float(priors.max()),
