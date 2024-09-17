@@ -301,7 +301,7 @@ def run(**kwargs):
     save_path = kwargs.get("save_path", None)
     best_fit = []
     best_likelihood = -np.inf
-    fit_results = Parallel(n_jobs=-1)(delayed(singleFit)(X, S, **kwargs) for i in range(NUM_FITS))
+    fit_results = Parallel(n_jobs=kwargs.get('core_limit',-1))(delayed(singleFit)(X, S, **kwargs) for i in range(NUM_FITS))
     for component_params, weights, likelihoods in fit_results:
         if likelihoods[-1] > best_likelihood:
             best_fit = (component_params, weights, likelihoods)

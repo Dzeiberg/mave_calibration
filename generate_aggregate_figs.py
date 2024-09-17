@@ -8,6 +8,7 @@ import numpy as np
 from mave_calibration.skew_normal import density_utils
 from main import prior_from_weights
 from mave_calibration.evidence_thresholds import get_tavtigian_constant
+from evidence_distribution_fig import generate_evidence_distribution_fig
 from tqdm import tqdm
 from joblib import Parallel, delayed
 from matplotlib.gridspec import GridSpec
@@ -173,7 +174,7 @@ def main(*args,**kwargs):
 
     Required Keyword Arguments
     ----------
-    data_filepath : str
+    samples_filepath : str
         The path to the data file (csv) containing columns sample_name, score for each observation
     dataset_name : str :
         The name of the dataset
@@ -185,6 +186,8 @@ def main(*args,**kwargs):
     Optional Keyword Arguments
     --------------------------
     data_config_filepath : str (default None)
+    processed_scoreset_filepath : str
+        Path to the fully processed scoreset (from mapping_nbs directory)
     """
     # Load Data
     config_filepath = Path(kwargs['config_file'])
@@ -195,14 +198,14 @@ def main(*args,**kwargs):
 
     save_dir = Path(kwargs['save_dir'])
     save_dir.mkdir(exist_ok=True,parents=True)
-    X,S,sample_names = load_data(data_filepath=kwargs['data_filepath'],)
+    X,S,sample_names = load_data(data_filepath=kwargs['samples_filepath'],)
     
     # Load Results
     results = load_results(*args)
     dataset_name = kwargs['dataset_name']
     control_sample_index = sample_names.index(config[dataset_name]['controls'])
     # Calculate score thresholds
-    if kwargs.get("reload_score_thresholds",True) and (save_dir / f"{dataset_name}_score_thresholds.pkl").exists():
+    if kwargs.get("reload_score_thresholds",False) and (save_dir / f"{dataset_name}_score_thresholds.pkl").exists():
         p_score_thresholds,b_score_thresholds,priors = joblib.load(save_dir / f"{dataset_name}_score_thresholds.pkl")
         p_score_thresholds = np.array(p_score_thresholds)
         b_score_thresholds = np.array(b_score_thresholds)
@@ -212,10 +215,7 @@ def main(*args,**kwargs):
         joblib.dump((p_score_thresholds.tolist(),b_score_thresholds.tolist(),priors.tolist()),save_dir / f"{dataset_name}_score_thresholds.pkl")
 
     NSamples = S.shape[1]
-    fig = plt.figure(layout="constrained", figsize=(8,(NSamples) * 3))
-
-    gs = GridSpec(NSamples + 4, 1, figure=fig,)
-    topAxs = [fig.add_subplot(gs[i, 0]) for i in range(NSamples)]
+    fig, topAxs = plt.subplots(NSamples,1,figsize=(8,(NSamples) * 2),sharex=True,sharey=True)
 
     fit_fig(X,S,sample_names,dataset_name,results,topAxs, priors)
     linestyles = [(0, (1,5)),'dotted','dashed','dashdot','solid']
@@ -267,6 +267,15 @@ def main(*args,**kwargs):
         suffix = "_debug"
     fig.savefig(save_dir / f"{dataset_name}_calibration{suffix}.jpg",**savekwargs)
     plt.close(fig)
+
+    processed_scoreset_filepath = kwargs.get('processed_scoreset_filepath',None)
+    if processed_scoreset_filepath is not None:
+        invert_scores = config[dataset_name].get('invert',False)
+        generate_evidence_distribution_fig(scoreset_filepath=processed_scoreset_filepath,
+                                            result_filepath=save_dir / f"{dataset_name}.json",
+                                            save_dir=save_dir,
+                                            dataset_name=dataset_name,
+                                            invert_scores=invert_scores)
 
 if __name__ == "__main__":
     Fire(main)
