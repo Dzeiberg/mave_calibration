@@ -78,7 +78,7 @@ def get_sample_density(X, results):
     D = np.stack(densities,axis=1)
     return D
 
-def fit_fig(X,S,sample_names,dataset_name,results,ax, priors):
+def fit_fig(X,S,sample_names,results,ax, priors=[]):
     N_Samples = S.shape[1]
     std=X.std()
     rng = np.arange(X.min() - std,X.max() + std,.01)
@@ -90,7 +90,7 @@ def fit_fig(X,S,sample_names,dataset_name,results,ax, priors):
     for i in range(N_Samples):
         name = sample_names[i]
         label = f"{name} (n={S[:,i].sum():,d})"
-        if name == "gnomAD":
+        if len(priors) and (name == "gnomAD"):
             label += f" (median prior={np.quantile(priors,.5):.2f})"
         sns.histplot(X[S[:,i]],ax=ax[i],stat='density',color=palette[i],bins=bins,label=label)
         ax[i].plot(rng, D[i].mean(0),color=palette_3[i],)
@@ -217,7 +217,7 @@ def main(*args,**kwargs):
     NSamples = S.shape[1]
     fig, topAxs = plt.subplots(NSamples,1,figsize=(8,(NSamples) * 2),sharex=True,sharey=True)
 
-    fit_fig(X,S,sample_names,dataset_name,results,topAxs, priors)
+    fit_fig(X,S,sample_names,results,topAxs, priors)
     linestyles = [(0, (1,5)),'dotted','dashed','dashdot','solid']
     qp = kwargs.get('qp',.05)
     qb = kwargs.get('qb',.95)
