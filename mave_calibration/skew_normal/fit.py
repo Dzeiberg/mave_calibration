@@ -1,17 +1,22 @@
 import scipy.stats as sps
 import numpy as np
 
-def fit_skew_normal(X):
+def fit_skew_normal(X, **kwargs):
     """
     Fit a skew normal distribution to the data.
-    """
-    params = list(map(float,sps.skewnorm.fit(X)))
-    if abs(params[0]) > 25:
-        return list(map(float,method_of_moments(X)))
-    return params
 
-    
-    
+    Optional Keyword Arguments:
+    - method: str: method to use for fitting the skew normal distribution. Options: ["mle", "mm"]. Default: "mle"
+
+    Returns:
+    - params: list: parameters of the skew normal distribution (skew, loc, scale)
+    """
+    method = kwargs.get("method", "mle")
+    if method == "mle":
+        return list(map(float,sps.skewnorm.fit(X)))
+    else:
+        return list(map(float,method_of_moments(X)))
+
 def method_of_moments(X):
     params = [0,0,0]
 

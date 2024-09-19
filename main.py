@@ -82,6 +82,7 @@ def singleFit(X, S, **kwargs):
     xlims = (X.min() - obs_std * buffer_stds,
              X.max() + obs_std * buffer_stds)
     N_components = kwargs.get("n_components", 2)
+    assert N_components == 2
     N_samples = S.shape[1]
     MAX_N_ITERS = kwargs.get("max_iters", 10000)
     # Initialize the components
@@ -92,7 +93,9 @@ def singleFit(X, S, **kwargs):
         else:
             xInit = X
         initial_params = constrained_gmm_init(xInit,**kwargs)
-        assert not density_constraint_violated(*initial_params, xlims)
+        if density_constraint_violated(*initial_params, xlims):
+            print(f"failed to initialized components\nfinal parameters {initial_params[0]}\n{initial_params[1]}\nreturning -inf likelihood")
+            return initial_params, np.ones((N_samples, N_components)) / N_components, [-1 * np.inf,]
     else:
         initial_params = gmm_init(X,**kwargs)
     # Initialize the mixture weights of each sample

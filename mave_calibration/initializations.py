@@ -58,7 +58,7 @@ def constrained_gmm_init(X, **kwargs):
     n_components = kwargs.get("n_components", 2)
     if n_components != 2:
         logging.warning(f"Density constraint only enforced for first two components; {n_components} components requested")
-    n_inits = kwargs.get("n_inits", 10)
+    n_inits = kwargs.get("n_inits", 100)
     X = np.array(X).reshape((-1, 1))
     buffer_stds = kwargs.get("buffer_stds", 1)
     obs_std = X.std()
@@ -71,6 +71,10 @@ def constrained_gmm_init(X, **kwargs):
         _range = trange(n_inits,leave=False)
     else:
         _range = range(n_inits)
+    if kwargs.get('skewnorm_init_method',None) is None:
+        init_method = ['mle' if i % 2 == 0 else 'mm' for i in range(n_inits)]
+    else:
+        init_method = [kwargs.get('skewnorm_init_method') for _ in range(n_inits)]
     for rep in _range:
         component_parameters = []
         comp_weights = np.zeros(n_components)
@@ -78,30 +82,42 @@ def constrained_gmm_init(X, **kwargs):
             X_component = sample_from_gmm(X, gmm_component_responsibilities[i])
             comp_weights[i] = len(X_component) / len(X)
 
-            params = fit_skew_normal(X_component)
+            params = fit_skew_normal(X_component, method=init_method[rep])
             component_parameters.append(params)
         rep_failed = False
         for compI, compJ in zip(range(0,n_components-1),range(1,n_components)):
-            for _ in range(100):
+            for _ in range(300):
                 if not density_constraint_violated(
-                    component_parameters[0], component_parameters[1], xlims
+                    component_parameters[compI], component_parameters[compJ], xlims
                 ):
                     break
-                larger_comp_index = np.argmax([max(abs(p[0]),p[2]) for p in component_parameters[:2]])
+                # identify whether compI or compJ has the larger magnitude of skew or scale
+                larger_comp_index = compI
+                magnitudeI = max(abs(component_parameters[compI][0]),component_parameters[compI][2])
+                magnitudeJ = max(abs(component_parameters[compJ][0]),component_parameters[compJ][2])
+                # magnitudeI = component_parameters[compI][2]
+                # magnitudeJ = component_parameters[compJ][2]
+                if magnitudeJ > magnitudeI:
+                    larger_comp_index = compJ
                 if abs(component_parameters[larger_comp_index][0]) > component_parameters[larger_comp_index][2]:
-                    # print(f"scaling down a of comp {larger_comp_index}")
-                    component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * -.9,
+                # if False:
+                    # Scale down and flip the skew
+                    # component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * -.9,
+                    #                                             component_parameters[larger_comp_index][1],
+                    #                                             component_parameters[larger_comp_index][2]]
+                    # ONLY Scale down the skew
+                    component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * .9,
                                                                 component_parameters[larger_comp_index][1],
                                                                 component_parameters[larger_comp_index][2]]
                 else:
-                    # print(f"scaling down scale of comp {larger_comp_index}")
+                    # Scale down the scale
                     component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0],
                                                                 component_parameters[larger_comp_index][1],
                                                                 component_parameters[larger_comp_index][2] * .9]
             if density_constraint_violated(
-                component_parameters[0], component_parameters[1], xlims
+                component_parameters[compI], component_parameters[compJ], xlims
             ):
-                print(f"init {rep} failed; final parameters: {component_parameters[0]}\t{component_parameters[1]}")
+                print(f"init {rep} failed; final parameters: {component_parameters[compI]}\t{component_parameters[compJ]}")
                 rep_failed = True
                 break
         if rep_failed:
