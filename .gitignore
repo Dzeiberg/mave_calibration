@@ -2,3 +2,12 @@
 *.sh
 *.pdf
 *.lock
+example/*.pkl
+example/*.json
+example/*.jpg
+
+examples/Findlay_BRCA1_SGE/dataset_calibration.jpg
+examples/Findlay_BRCA1_SGE/dataset_score_thresholds.pkl
+examples/Findlay_BRCA1_SGE/dataset.json
+examples/Findlay_BRCA1_SGE/samples.csv
+examples/Findlay_BRCA1_SGE/fits/2024-09-20-12-57-25-166569.json

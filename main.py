@@ -1,9 +1,12 @@
 from mave_calibration.initializations import constrained_gmm_init, gmm_init
-import scipy.stats as sp
-import numpy as np
-import pandas as pd
 from mave_calibration.em_opt.utils import get_sample_weights,constrained_em_iteration,em_iteration,get_likelihood
 from mave_calibration.em_opt.constraints import density_constraint_violated
+
+import scipy.stats as sp
+import logging
+import numpy as np
+import pandas as pd
+from collections import namedtuple
 from tqdm.autonotebook import tqdm
 import json
 import os
@@ -12,9 +15,9 @@ from fire import Fire
 from joblib import Parallel, delayed
 from sklearn.metrics import roc_auc_score
 import datetime
+from typing import List, Tuple, Iterable
 
-
-def draw_sample(params,weights,N=1):
+def draw_sample(params : List[Tuple[float]], weights : np.ndarray, sample_size : int=1) -> np.ndarray:
     """
     Draw a list of samples from a mixture of skew normal distributions
 
@@ -27,28 +30,30 @@ def draw_sample(params,weights,N=1):
 
     Optional Arguments:
     --------------------------------
-    N -- int (default 1)
+    sample_size -- int (default 1)
         The number of observations to draw
     
     Returns:
     --------------------------------
-    samples -- Ndarray (N,)
+    samples -- Ndarray (sample_size,)
         The drawn sample
     """
     samples = []
-    for i in range(N):
+    for i in range(sample_size):
         k = np.random.binomial(1,weights[1])
         samples.append(sp.skewnorm.rvs(*params[k]))
     return np.array(samples)
 
-def singleFit(X, S, **kwargs):
+Fit = namedtuple('Fit', ['component_params', 'weights', 'likelihoods'])
+
+def singleFit(observations : np.ndarray, sample_indicators : np.ndarray, **kwargs) -> Fit:
     """
     Run a single fit of the model
 
     Required Arguments:
     --------------------------------
-    X -- the assay scores (N,)
-    S -- the sample matrix (N,S) where S[i,j] is True if observation i is in sample j
+    observations -- the assay scores (N,)
+    sample_indicators -- the sample matrix (N,S) where S[i,j] is True if observation i is in sample j
 
     Optional Arguments:
     --------------------------------
@@ -78,53 +83,53 @@ def singleFit(X, S, **kwargs):
     buffer_stds = kwargs.get('buffer_stds',1)
     if buffer_stds < 0:
         raise ValueError("buffer_stds must be non-negative")
-    obs_std = X.std()
-    xlims = (X.min() - obs_std * buffer_stds,
-             X.max() + obs_std * buffer_stds)
+    obs_std = observations.std()
+    xlims = (observations.min() - obs_std * buffer_stds,
+             observations.max() + obs_std * buffer_stds)
     N_components = kwargs.get("n_components", 2)
     assert N_components == 2
-    N_samples = S.shape[1]
+    N_samples = sample_indicators.shape[1]
     MAX_N_ITERS = kwargs.get("max_iters", 10000)
     # Initialize the components
     if CONSTRAINED:
         init_to_sample = kwargs.get("init_to_sample", None)
         if init_to_sample is not None:
-            xInit = X[S[:,init_to_sample]]
+            xInit = observations[sample_indicators[:,init_to_sample]]
         else:
-            xInit = X
+            xInit = observations
         initial_params = constrained_gmm_init(xInit,**kwargs)
         if density_constraint_violated(*initial_params, xlims):
-            print(f"failed to initialized components\nfinal parameters {initial_params[0]}\n{initial_params[1]}\nreturning -inf likelihood")
-            return initial_params, np.ones((N_samples, N_components)) / N_components, [-1 * np.inf,]
+            logging.warning(f"failed to initialized components\nfinal parameters {initial_params[0]}\n{initial_params[1]}\nreturning -inf likelihood")
+            return Fit(component_params=initial_params, weights=np.ones((N_samples, N_components)) / N_components, likelihoods=[-1 * np.inf,])
     else:
-        initial_params = gmm_init(X,**kwargs)
+        initial_params = gmm_init(observations,**kwargs)
     # Initialize the mixture weights of each sample
     W = np.ones((N_samples, N_components)) / N_components
-    W = get_sample_weights(X, S, initial_params, W)
+    W = get_sample_weights(observations, sample_indicators, initial_params, W)
     # initial likelihood
     likelihoods = np.array(
         [
-            get_likelihood(X, S, initial_params, W) / len(S),
+            get_likelihood(observations, sample_indicators, initial_params, W) / len(sample_indicators),
         ]
     )
     # Check for bad initialization
     try:
         if CONSTRAINED:
             updated_component_params, updated_weights = (
-                constrained_em_iteration(X, S, initial_params, W, xlims, iterNum=0)
+                constrained_em_iteration(observations, sample_indicators, initial_params, W, xlims, iterNum=0)
             )
         else:
             updated_component_params, updated_weights = em_iteration(
-                X, S, initial_params, W
+                observations, sample_indicators, initial_params, W
             )
-    except ZeroDivisionError as e:
-        print("ZeroDivisionError")
-        return initial_params, W, [*likelihoods, -1 * np.inf]
+    except ZeroDivisionError:
+        logging.warning("ZeroDivisionError")
+        return Fit(component_params=initial_params, weights=W, likelihoods=[*likelihoods, -1 * np.inf])
     likelihoods = np.array(
         [
             *likelihoods,
-            get_likelihood(X, S, updated_component_params, updated_weights)
-            / len(S),
+            get_likelihood(observations, sample_indicators, updated_component_params, updated_weights)
+            / len(sample_indicators),
         ]
     )
     # Run the EM algorithm
@@ -135,23 +140,23 @@ def singleFit(X, S, **kwargs):
             if CONSTRAINED:
                 updated_component_params, updated_weights = (
                     constrained_em_iteration(
-                        X, S, updated_component_params, updated_weights, xlims, iterNum=i+1,
+                        observations,sample_indicators, updated_component_params, updated_weights, xlims, iterNum=i+1,
                     )
                 )
             else:
                 updated_component_params, updated_weights = em_iteration(
-                    X, S, updated_component_params, updated_weights
+                    observations,sample_indicators, updated_component_params, updated_weights
                 )
-        except ZeroDivisionError as e:
+        except ZeroDivisionError:
             print("ZeroDivisionError")
-            return initial_params, W, [*likelihoods, -1 * np.inf]
+            return Fit(component_params=initial_params, weights=W, likelihoods=[*likelihoods, -1 * np.inf])
         likelihoods = np.array(
             [
                 *likelihoods,
                 get_likelihood(
-                    X, S, updated_component_params, updated_weights
+                    observations,sample_indicators, updated_component_params, updated_weights
                 )
-                / len(S),
+                / len(sample_indicators),
             ]
         )
         if kwargs.get("verbose",True):
@@ -165,49 +170,50 @@ def singleFit(X, S, **kwargs):
         assert not density_constraint_violated(
             updated_component_params[0], updated_component_params[1], xlims
         )
-    return updated_component_params, updated_weights, likelihoods
+    return Fit(component_params=updated_component_params, weights=updated_weights, likelihoods=likelihoods)
 
 
-def prior_from_weights(W, population_idx=2, controls_idx=1, pathogenic_idx=0):
-    prior = ((W[population_idx, 0] - W[controls_idx, 0]) / (W[pathogenic_idx, 0] - W[controls_idx, 0])).item()
+def prior_from_weights(weights : np.ndarray, population_idx : int=2, controls_idx : int=1, pathogenic_idx : int=0) -> float:
+    """
+    Calculate the prior probability of an observation from the population being pathogenic
+
+    Required Arguments:
+    --------------------------------
+    weights -- Ndarray (NSamples, NComponents)
+        The mixture weights of each sample
+
+    Optional Arguments:
+    --------------------------------
+    population_idx -- int (default 2)
+        The index of the population component in the weights matrix
+    
+    controls_idx -- int (default 1)
+        The index of the controls (i.e. benign) component in the weights matrix
+
+    pathogenic_idx -- int (default 0)
+        The index of the pathogenic component in the weights matrix
+
+    Returns:
+    --------------------------------
+    prior -- float
+        The prior probability of an observation from the population being pathogenic
+    """
+    prior = ((weights[population_idx, 0] - weights[controls_idx, 0]) / (weights[pathogenic_idx, 0] - weights[controls_idx, 0])).item()
     return np.clip(prior, 1e-10, 1 - 1e-10)
 
-
-def P2LR(p, alpha):
-    p = np.clip(p, 1e-10, 1 - 1e-10)
-    return p / (1 - p) * (1 - alpha) / alpha
-    # return np.log(p) - np.log(1 - p) + np.log(1-alpha) - np.log(alpha)
-
-def LR2P(lr, alpha):
-    return 1 / (1 + np.exp(-1 * (np.log(lr) + np.log(alpha) - np.log(1 - alpha))))
-
-def get_fit_statistics(X, S, sample_names, weights, component_params):
-    statistics = {}
-    for sample_idx, sample_name in enumerate(sample_names):
-        sample_observations = X[S[:,sample_idx]]
-        synthetic_observations = draw_sample(component_params,weights[sample_idx],N=len(sample_observations))
-        ks_test = sp.kstest(sample_observations, synthetic_observations)
-        ks_stat, ks_p = ks_test.statistic, ks_test.pvalue
-        xU = np.concatenate((sample_observations, synthetic_observations))
-        yU = np.concatenate((np.zeros_like(sample_observations), np.ones_like(synthetic_observations)))
-        u_stat, u_p = sp.mannwhitneyu(sample_observations, synthetic_observations)
-        auc = roc_auc_score(yU, xU)
-        statistics[sample_name] = dict(ks_stat=ks_stat, ks_p=ks_p, u_stat=u_stat, u_p=u_p, auc=auc)
-    return statistics
-
-def save(loaded_sample_names, best_fit, bootstrap_indices,**kwargs):
+def save(sample_names : List[str], best_fit : Fit, bootstrap_indices : Iterable[Iterable[int]],**kwargs) -> None:
     """
     Save the fit
 
     Required Arguments:
     --------------------------------
-    loaded_sample_names -- List[str]
+    sample_names -- List[str]
         The sample names
 
-    best_fit -- Tuple[Tuple[float], Ndarray, Ndarray]
+    best_fit -- Fit (i.e. Tuple[Tuple[float], Ndarray, Ndarray])
         The component parameters, weights, and likelihoods of the best fit
     
-    bootstrap_indices -- List[Tuple[int]]
+    bootstrap_indices -- Iterable[Iterable[int]]
         The indices of the bootstrap samples
 
     Required Keyword Arguments:
@@ -227,38 +233,65 @@ def save(loaded_sample_names, best_fit, bootstrap_indices,**kwargs):
     if dataset_id is not None:
         filename += "_" + dataset_id
     filename += ".json"
-    component_params, weights, likelihoods = best_fit
+    # component_params, weights, likelihoods = best_fit
+    savevals = {
+                "component_params": best_fit.component_params,
+                "weights": best_fit.weights.tolist(),
+                "likelihoods": best_fit.likelihoods.tolist(),
+                "config": {k:v for k,v in kwargs.items() if is_serializable(v)},
+                "sample_names": sample_names,
+                "bootstrap_indices": [indices.tolist() for indices in bootstrap_indices],
+            }
+    for k in savevals:
+        if not is_serializable(savevals[k]):
+            raise ValueError(f"Value {k} is not serializable")
     with open(os.path.join(save_path, filename), "w") as f:
         json.dump(
-            {
-                "component_params": component_params,
-                "weights": weights.tolist(),
-                "likelihoods": likelihoods.tolist(),
-                "config": kwargs,
-                "sample_names": loaded_sample_names,
-                "bootstrap_indices": bootstrap_indices,
-            },
+            savevals,
             f,
         )
 
-def bootstrap(X, S, **kwargs):
+def is_serializable(value):
+    try:
+        json.dumps(value)
+        return True
+    except TypeError:
+        return False
+    
+def bootstrap(X : np.ndarray, S : np.ndarray, **kwargs) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int]]]:
+    """
+    Bootstrap the data
+
+    Required Arguments:
+    --------------------------------
+    X -- the assay scores (N,)
+    S -- the sample matrix (N,S)
+
+    Returns:
+    --------------------------------
+    XBootstrap -- the bootstrapped assay scores (N,)
+    SBootstrap -- the bootstrapped sample matrix (N,S)
+    bootstrap_indices -- List[Tuple[int]] -- The indices of the bootstrapped data
+    """
     XBootstrap, SBootstrap = X.copy(), S.copy()
     bootstrap_indices = []
     offset = 0
     for sample in range(S.shape[1]):
         sample_bootstrap_indices = np.random.choice(np.where(S[:,sample])[0], size=S[:,sample].sum(), replace=True)
-        bootstrap_indices.append(tuple(list(map(lambda a: a.item(), sample_bootstrap_indices))))
+        bootstrap_indices.append(np.array(list(map(lambda a: a.item(), sample_bootstrap_indices))))
         XBootstrap[offset:offset + len(sample_bootstrap_indices)] = X[sample_bootstrap_indices]
         SBootstrap[offset:offset + len(sample_bootstrap_indices), sample] = True
         offset += len(sample_bootstrap_indices)
     return XBootstrap, SBootstrap, bootstrap_indices
 
-def load_data(**kwargs):
+def load_data(**kwargs) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
+    Read a csv file containing the assay scores and sample names for all observations, e.g.:
 
+    ---------------------------
     Required Keyword Arguments:
     data_filepath : str
-        The path to the data file (csv) containing columns sample_name, score for each observation
+        The path to the data file (csv) containing columns sample_name, score for each observation, assumed to contain header
 
     Returns:
     X -- the assay scores (N,)
@@ -266,15 +299,19 @@ def load_data(**kwargs):
     sample_names -- the sample names (S,)
     """
     data = pd.read_csv(kwargs.get("data_filepath"))
-    sample_names = data["sample_name"].unique().tolist()
-    X = data["score"].values
+    assert 'score' in data.columns and 'sample_name' in data.columns, f"data file must contain columns 'score', 'sample_name', not {data.columns}"
+    sample_names = data.sample_name.unique().tolist()
+    X = data.score.values
     S = np.zeros((X.shape[0], len(sample_names)), dtype=bool)
     for i, sample_name in enumerate(sample_names):
-        S[:, i] = data["sample_name"] == sample_name
+        S[:, i] = data.sample_name == sample_name
+    assert (S.sum(0) > 0).all(), "each sample must have at least one observation"
     return X, S, sample_names
 
-def run(**kwargs):
+def run(**kwargs) -> Fit:
     """
+    Fit the multi-sample skew normal mixture model to the data
+    
     Required Keyword Arguments
     --------------------------
     data_filepath : str
@@ -291,27 +328,29 @@ def run(**kwargs):
     bootstrap : bool (default True)
         Whether to bootstrap the data before fitting the model
 
+    core_limit : int (default -1)
+        The number of cores to use for parallelizing the model fits (n=num_fits), -1 uses all available cores
+
     Returns:
     --------------------------
-    best_fit -- Tuple[Tuple[float], Ndarray, Ndarray]
+    best_fit -- Fit
         The component parameters, weights, and likelihoods of the best fit
     """
-    X, S, sample_names = load_data(**kwargs)
-    bootstrap_indices = [tuple(range(si)) for si in S.sum(0)]
+    observations, sample_indicators, sample_names = load_data(**kwargs)
+    bootstrap_indices = [np.where(Si)[0] for Si in sample_indicators.T]
     if kwargs.get("bootstrap",True):
-        X,S,bootstrap_indices = bootstrap(X,S,**kwargs)
+        observations,sample_indicators,bootstrap_indices = bootstrap(observations,sample_indicators,**kwargs)
     NUM_FITS = kwargs.get("num_fits", 25)
     save_path = kwargs.get("save_path", None)
-    best_fit = []
+    best_fit = None
     best_likelihood = -np.inf
-    fit_results = Parallel(n_jobs=kwargs.get('core_limit',-1))(delayed(singleFit)(X, S, **kwargs) for i in range(NUM_FITS))
-    for component_params, weights, likelihoods in fit_results:
-        if likelihoods[-1] > best_likelihood:
-            best_fit = (component_params, weights, likelihoods)
-            best_likelihood = likelihoods[-1]
+    fit_results = Parallel(n_jobs=kwargs.get('core_limit',-1))(delayed(singleFit)(observations, sample_indicators, **kwargs) for i in range(NUM_FITS))
+    for fit in fit_results:
+        if fit.likelihoods[-1] > best_likelihood:
+            best_fit = fit
+            best_likelihood = fit.likelihoods[-1]
     if np.isinf(best_likelihood):
-        print("No fits succeeded")
-        return
+        raise ValueError("Failed to fit model")
     if save_path is not None:
         save(sample_names, best_fit, bootstrap_indices,**kwargs)
     return best_fit

@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 from main import load_data
 import json
 from fire import Fire
@@ -8,15 +9,24 @@ import numpy as np
 from mave_calibration.skew_normal import density_utils
 from main import prior_from_weights
 from mave_calibration.evidence_thresholds import get_tavtigian_constant
-from evidence_distribution_fig import generate_evidence_distribution_fig
+from mave_calibration.plotting.evidence_distribution_fig import generate_evidence_distribution_fig
 from tqdm import tqdm
 from joblib import Parallel, delayed
-from matplotlib.gridspec import GridSpec
 import joblib
+from typing import List, Dict, Tuple
 
-def load_results(*args):
+def load_results(*result_filepaths : List[str]) -> List[Dict]:
+    """
+    load the results from the json files
+
+    Parameters
+    ----------
+    *result_filepaths : list of str
+        The filepaths to the json files
+    Returns
+    """
     results = []
-    for i,result_file in tqdm(enumerate(args)):
+    for i,result_file in tqdm(enumerate(result_filepaths)):
         result_file = Path(result_file)
         if not result_file.exists():
             continue
@@ -25,11 +35,23 @@ def load_results(*args):
         results.append(result)
     return results
 
-def thresholds_from_prior(prior, point_values=[1,2,3,4,8]):
+def thresholds_from_prior(prior, point_values=[1,2,3,4,8]) -> Tuple[List[float]]:
+    """
+    Get the evidence thresholds (LR+ values) for each point value given a prior
+
+    Parameters
+    ----------
+    prior : float
+        The prior probability of pathogenicity
+
+    
+    """
     exp_vals = 1 / np.array(point_values).astype(float)
     C,num_successes = get_tavtigian_constant(prior,return_success_count=True)
     # max number of successes is 17
     max_successes = 17
+    if num_successes < max_successes:
+        logging.warning(f"Only ({num_successes})/{max_successes} rules for combining evidence are satisfied by constant {C}, found using prior of ({prior:.4f})")
     pathogenic_evidence_thresholds = np.ones(len(point_values)) * np.nan
     benign_evidence_thresholds = np.ones(len(point_values)) * np.nan
     for strength_idx, exp_val in enumerate(exp_vals):
@@ -168,33 +190,45 @@ def count_violations(X,S,sample_names,final_thresholds_p,final_thresholds_b):
     b_lb_violations = (X[S[:,sample_map['B/LB']]] < final_thresholds_p[0]).sum()
     return p_lp_violations, b_lb_violations
 
-def main(*args,**kwargs):
+def generate_figs(*args,**kwargs):
     """
     Generate the calibration figure for the dataset
+
+    Required Positional Arguments
+    -----------------------------
+    *args : list of filepaths to result json files
 
     Required Keyword Arguments
     ----------
     samples_filepath : str
         The path to the data file (csv) containing columns sample_name, score for each observation
-    dataset_name : str :
-        The name of the dataset
     save_dir : str :
         The directory to save the figure
-    config_file : str :
-        The path to the config file containing User-specific parameters
 
     Optional Keyword Arguments
     --------------------------
-    data_config_filepath : str (default None)
+    dataset_name : str :
+        The name of the dataset to load information from the config file
+    config_file : str :
+        The path to the config file containing dataset-specific parameters
     processed_scoreset_filepath : str
         Path to the fully processed scoreset (from mapping_nbs directory)
     """
     # Load Data
-    config_filepath = Path(kwargs['config_file'])
-    if not config_filepath.exists():
-        raise FileNotFoundError(f"Config file {config_filepath} not found")
-    with open(config_filepath,'r') as f:
-        config = json.load(f)
+    config_filepath = kwargs.get('config_file',None)
+
+    if config_filepath is not None:
+        config_filepath = Path(config_filepath)
+        dataset_name = kwargs['dataset_name']
+        if not config_filepath.exists():
+            raise FileNotFoundError(f"Config file {config_filepath} not found")
+        with open(config_filepath,'r') as f:
+            config = json.load(f)
+        controls = config[dataset_name]['controls']
+        invert_raw_scores = config[dataset_name].get('invert',False)
+    else:
+        controls = kwargs['control_sample_name']
+        invert_raw_scores = False
 
     save_dir = Path(kwargs['save_dir'])
     save_dir.mkdir(exist_ok=True,parents=True)
@@ -202,8 +236,8 @@ def main(*args,**kwargs):
     
     # Load Results
     results = load_results(*args)
-    dataset_name = kwargs['dataset_name']
-    control_sample_index = sample_names.index(config[dataset_name]['controls'])
+    dataset_name = kwargs.get('dataset_name','dataset')
+    control_sample_index = sample_names.index(controls)
     # Calculate score thresholds
     if kwargs.get("reload_score_thresholds",False) and (save_dir / f"{dataset_name}_score_thresholds.pkl").exists():
         p_score_thresholds,b_score_thresholds,priors = joblib.load(save_dir / f"{dataset_name}_score_thresholds.pkl")
@@ -239,21 +273,21 @@ def main(*args,**kwargs):
             itm = axi.axvline(s,color='b',linestyle=linestyle,label=label)
             if i == 0:
                 legend_items.append(itm)
-    # plt.legend(handles=legend_items, loc='upper left', bbox_to_anchor=(1, 4))
     ymax = float(max([axi.get_ylim()[1] for axi in topAxs]))
     for axi in topAxs:
         axi.set_ylim(0,ymax)
-    p_lp_violations, b_lb_violations = count_violations(X,S,sample_names,final_thresholds_p,final_thresholds_b)
+    p_lp_violations, b_lb_violations = -1, -1
     rejected = False
-    if (p_lp_violations / S[:,sample_names.index('P/LP')].sum() > .10) or \
-        (b_lb_violations / S[:,sample_names.index('B/LB')].sum() > .10):
-        rejected = True
+    if 'P/LP' in sample_names and 'B/LB' in sample_names:
+        p_lp_violations, b_lb_violations = count_violations(X,S,sample_names,final_thresholds_p,final_thresholds_b)
+
+        if (p_lp_violations / S[:,sample_names.index('P/LP')].sum() > .10) or \
+            (b_lb_violations / S[:,sample_names.index('B/LB')].sum() > .10):
+            rejected = True
     summary = dict(pathogenic_score_thresholds=final_thresholds_p.tolist(),
                         benign_score_thresholds=final_thresholds_b.tolist(),
                         p_lp_violations=int(p_lp_violations),
-                        frac_p_lp_violations=p_lp_violations / S[:,sample_names.index('P/LP')].sum(),
                         b_lb_violations=int(b_lb_violations),
-                        frac_b_lb_violations=b_lb_violations / S[:,sample_names.index('B/LB')].sum(),
                         rejected=rejected,
                         min_prior=float(priors.min()),
                         max_prior=float(priors.max()),
@@ -262,20 +296,16 @@ def main(*args,**kwargs):
     with open(save_dir / f"{dataset_name}.json",'w') as f:
         json.dump(summary,f)
     savekwargs = dict(format='jpg',dpi=300,bbox_inches='tight')
-    suffix = ""
-    if kwargs.get("debug",False):
-        suffix = "_debug"
-    fig.savefig(save_dir / f"{dataset_name}_calibration{suffix}.jpg",**savekwargs)
+    fig.savefig(save_dir / f"{dataset_name}_calibration.jpg",**savekwargs)
     plt.close(fig)
 
     processed_scoreset_filepath = kwargs.get('processed_scoreset_filepath',None)
     if processed_scoreset_filepath is not None:
-        invert_scores = config[dataset_name].get('invert',False)
         generate_evidence_distribution_fig(scoreset_filepath=processed_scoreset_filepath,
                                             result_filepath=save_dir / f"{dataset_name}.json",
                                             save_dir=save_dir,
                                             dataset_name=dataset_name,
-                                            invert_scores=invert_scores)
+                                            invert_scores=invert_raw_scores)
 
 if __name__ == "__main__":
-    Fire(main)
+    Fire(generate_figs)
