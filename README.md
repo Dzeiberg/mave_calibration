@@ -10,7 +10,7 @@ Given assay scores for control variants (e.g. ClinVar P/LP and B/LB) along with 
 ```python
 from main import singleFit
 
-component_parameters, sample_mixture_weights, likelihoods = singleFit(observations, sample_indicators)
-
+modelFit = singleFit(observations, sample_indicators)
 
 ```
+### See [examples/example.py](examples/example.py)

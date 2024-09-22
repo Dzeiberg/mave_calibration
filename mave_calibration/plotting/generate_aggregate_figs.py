@@ -173,6 +173,9 @@ def get_score_threshold_mats(X,control_sample_index,results):
 
     b_score_thresholds : np.ndarray (n_bootstrap, 5)
         score thresholds for -1, -2, -3, -4, -8 points for each bootstrap iteration
+
+    priors : np.ndarray (n_bootstrap,)
+        The prior probabilities for each bootstrap iteration
     """
     std = X.std()
     rng = np.arange(X.min() - std,X.max() + std,.01)
