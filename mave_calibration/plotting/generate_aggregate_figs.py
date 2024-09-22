@@ -1,13 +1,12 @@
 from pathlib import Path
 import logging
-from main import load_data
+from mave_calibration.main import load_data,prior_from_weights
 import json
 from fire import Fire
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 from mave_calibration.skew_normal import density_utils
-from main import prior_from_weights
 from mave_calibration.evidence_thresholds import get_tavtigian_constant
 from mave_calibration.plotting.evidence_distribution_fig import generate_evidence_distribution_fig
 from tqdm import tqdm
