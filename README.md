@@ -6,6 +6,13 @@ Given assay scores for control variants (e.g. ClinVar P/LP and B/LB) along with 
 
 ![method overview](./docs/method_overview.png)
 
+## Installation
+```bash
+conda create -n mave_calibration python=3.10
+conda activate mave_calibration
+cd <project_parent_directory>
+pip install -e mave_calibration/
+```
 ## Usage
 ```python
 from mave_calibration.main import singleFit
