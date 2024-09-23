@@ -28,3 +28,7 @@ prior = prior_from_weights(modelFit.get("weights"),
 pathogenic_score_thresholds, benign_score_thresholds = get_score_thresholds(lrPlus, prior, score_range)
 ```
 ### See [examples/example.py](examples/example.py)
+
+## Example Figures
+![Findlay BRCA1 SGE Model Fit](docs/Findlay_BRCA1_SGE_calibration.jpg)
+![Findlay BRCA1 SGE Evidence Distribution](docs/Findlay_BRCA1_SGE_evidence_distribution_2024_09_18_13_46_44_213850.jpg)
