@@ -5,7 +5,6 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from data_processing.mapping_nbs.mapping_utils import load_mapping_data
 from fire import Fire
 from datetime import datetime
 

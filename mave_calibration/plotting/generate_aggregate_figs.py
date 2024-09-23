@@ -90,11 +90,11 @@ def summarize_thresholds(score_thresholds,q):
     score_thresholds[~accept_evidence_strength] = np.nan
     return score_thresholds
 
-def get_sample_density(X, results):
+def get_sample_density(X, results,sample_names):
     densities = []
     for result in results:
-        iter_densities = [density_utils.joint_densities(X, result['component_params'], result['weights'][i]).sum(0) \
-                          for i in range(len(result['sample_names']))]
+        iter_densities = [density_utils.joint_densities(X, result.component_params, result.weights[i]).sum(0) \
+                          for i in range(len(sample_names))]
         densities.append(iter_densities)
     D = np.stack(densities,axis=1)
     return D
@@ -106,7 +106,7 @@ def fit_fig(X,S,sample_names,results,ax, priors=[]):
     palette = sns.color_palette("pastel", N_Samples)
     palette_3 = sns.color_palette("dark", N_Samples)
     palette_2 = sns.color_palette("bright", N_Samples)
-    D = get_sample_density(rng, results)
+    D = get_sample_density(rng, results, sample_names)
     bins = np.linspace(X.min(),X.max(),25)
     for i in range(N_Samples):
         name = sample_names[i]
@@ -120,16 +120,16 @@ def fit_fig(X,S,sample_names,results,ax, priors=[]):
         ax[i].legend()
 
 def get_lrPlus(X, control_sample_index, result, pathogenic_sample_num=0):
-    f_P = density_utils.joint_densities(X, result['component_params'],
-                                        result['weights'][pathogenic_sample_num]).sum(0)
-    f_B = density_utils.joint_densities(X, result['component_params'],
-                                        result['weights'][control_sample_index]).sum(0)
+    f_P = density_utils.joint_densities(X, result.component_params,
+                                        result.weights[pathogenic_sample_num]).sum(0)
+    f_B = density_utils.joint_densities(X, result.component_params,
+                                        result.weights[control_sample_index]).sum(0)
     return f_P / f_B
 
 def get_priors(results, control_sample_index):
     priors = []
     for result in results:
-        priors.append(prior_from_weights(np.array(result['weights']),
+        priors.append(prior_from_weights(np.array(result.weights),
                                     controls_idx=control_sample_index))
     priors = np.array(priors)
     # fill in nans/infs with median
