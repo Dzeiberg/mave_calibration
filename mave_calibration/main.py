@@ -80,7 +80,7 @@ def singleFit(observations : np.ndarray, sample_indicators : np.ndarray, **kwarg
         the likelihood of the model at each iteration
     """
     CONSTRAINED = kwargs.get("constrained", True)
-    buffer_stds = kwargs.get('buffer_stds',1)
+    buffer_stds = kwargs.get('buffer_stds',0)
     if buffer_stds < 0:
         raise ValueError("buffer_stds must be non-negative")
     obs_std = observations.std()

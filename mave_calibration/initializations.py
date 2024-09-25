@@ -60,7 +60,7 @@ def constrained_gmm_init(X, **kwargs):
         logging.warning(f"Density constraint only enforced for first two components; {n_components} components requested")
     n_inits = kwargs.get("n_inits", 100)
     X = np.array(X).reshape((-1, 1))
-    buffer_stds = kwargs.get("buffer_stds", 1)
+    buffer_stds = kwargs.get("buffer_stds", 0)
     obs_std = X.std()
     xlims = (X.min() - obs_std * buffer_stds,
              X.max() + obs_std * buffer_stds)
