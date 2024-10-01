@@ -19,10 +19,10 @@ def runExample():
     observations, sample_indicators, sample_names = load_data(data_filepath=dataset_dir / "samples.csv")
     # run the calibration
     bestFit = singleFit(observations, sample_indicators,
-                   max_iters=10000, n_inits=100, verbose=True)._asdict()
+                   max_iters=10000, n_inits=100, verbose=True)
     score_range =np.arange(observations.min(), observations.max(), .01)
     lrPlus = get_lrPlus(score_range, sample_names.index('B/LB'), bestFit)
-    prior = prior_from_weights(bestFit.get("weights"),
+    prior = prior_from_weights(bestFit.weights,
                                     controls_idx=sample_names.index('B/LB'))
     pathogenic_score_thresholds, benign_score_thresholds = get_score_thresholds(lrPlus, prior, score_range)
     print("Pathogenic score thresholds:")
