@@ -417,12 +417,15 @@ def prep_data(data_filepath : str,**kwargs):
     labels = np.array(labels)
     for i, label_val in enumerate(unique_labels):
         sample_indicators[:, i] = labels == label_val
-    assert (sample_indicators.sum(0) > 0).all(), "each sample must have at least one observation"
+    # remove any samples that are all zeros
+    sample_included = sample_indicators.sum(0) > 0
+    sample_indicators = sample_indicators[:,sample_included]
+    unique_labels = np.array(unique_labels)[sample_included]
+    assert (sample_indicators.sum(0) > 0).all(), "each sample must have at least one observation; current counts: " + str(sample_indicators.sum(0))
     assert (sample_indicators.sum(1) == 1).all(), "each observation must belong to exactly one sample"
     assert sample_indicators.shape[0] == len(observations), "number of observations must match number of sample indicators"
-    # remove any samples that are all zeros
-    sample_indicators = sample_indicators[:,sample_indicators.sum(0) > 0]
-    return observations, sample_indicators, unique_labels, bootstrap_indices
+    
+    return observations, sample_indicators, unique_labels.tolist(), bootstrap_indices
 
 
 if __name__ == "__main__":
