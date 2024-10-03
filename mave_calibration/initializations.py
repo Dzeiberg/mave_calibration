@@ -7,6 +7,8 @@ import numpy as np
 from tqdm import trange
 import logging
 
+from scipy.stats._warnings_errors import FitError
+
 def fit_gmm(X,**kwargs):
     """
     Fit a Gaussian Mixture Model to the data
@@ -78,12 +80,18 @@ def constrained_gmm_init(X, **kwargs):
     for rep in _range:
         component_parameters = []
         comp_weights = np.zeros(n_components)
+        failed_init_component = False
         for i in range(n_components):
             X_component = sample_from_gmm(X, gmm_component_responsibilities[i])
             comp_weights[i] = len(X_component) / len(X)
-
-            params = fit_skew_normal(X_component, method=init_method[rep])
+            try:
+                params = fit_skew_normal(X_component, method=init_method[rep])
+            except FitError:
+                failed_init_component = True
+                break
             component_parameters.append(params)
+        if failed_init_component:
+            continue
         rep_failed = False
         for compI, compJ in zip(range(0,n_components-1),range(1,n_components)):
             for _ in range(300):
@@ -117,7 +125,8 @@ def constrained_gmm_init(X, **kwargs):
             if density_constraint_violated(
                 component_parameters[compI], component_parameters[compJ], xlims
             ):
-                print(f"init {rep} failed; final parameters: {component_parameters[compI]}\t{component_parameters[compJ]}")
+                if kwargs.get('verbose',True):
+                    print(f"init {rep} failed; final parameters: {component_parameters[compI]}\t{component_parameters[compJ]}")
                 rep_failed = True
                 break
         if rep_failed:
