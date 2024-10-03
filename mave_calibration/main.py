@@ -16,6 +16,7 @@ from joblib import Parallel, delayed
 from sklearn.metrics import roc_auc_score
 import datetime
 from typing import List, Tuple, Iterable
+import random
 
 def draw_sample(params : List[Tuple[float]], weights : np.ndarray, sample_size : int=1) -> np.ndarray:
     """
@@ -52,8 +53,8 @@ def singleFit(observations : np.ndarray, sample_indicators : np.ndarray, **kwarg
 
     Required Arguments:
     --------------------------------
-    observations -- the assay scores (N,)
-    sample_indicators -- the sample matrix (N,S) where S[i,j] is True if observation i is in sample j
+    observations -- the assay scores (N_Observations)
+    sample_indicators -- the sample matrix (N_ObservationsS) where S[i,j] is True if observation i is in sample j
 
     Optional Arguments:
     --------------------------------
@@ -92,12 +93,7 @@ def singleFit(observations : np.ndarray, sample_indicators : np.ndarray, **kwarg
     MAX_N_ITERS = kwargs.get("max_iters", 10000)
     # Initialize the components
     if CONSTRAINED:
-        init_to_sample = kwargs.get("init_to_sample", None)
-        if init_to_sample is not None:
-            xInit = observations[sample_indicators[:,init_to_sample]]
-        else:
-            xInit = observations
-        initial_params = constrained_gmm_init(xInit,**kwargs)
+        initial_params = constrained_gmm_init(observations,**kwargs)
         if density_constraint_violated(*initial_params, xlims):
             logging.warning(f"failed to initialized components\nfinal parameters {initial_params[0]}\n{initial_params[1]}\nreturning -inf likelihood")
             return Fit(component_params=initial_params, weights=np.ones((N_samples, N_components)) / N_components, likelihoods=[-1 * np.inf,])
@@ -201,20 +197,27 @@ def prior_from_weights(weights : np.ndarray, population_idx : int=2, controls_id
     prior = ((weights[population_idx, 0] - weights[controls_idx, 0]) / (weights[pathogenic_idx, 0] - weights[controls_idx, 0])).item()
     return np.clip(prior, 1e-10, 1 - 1e-10)
 
-def save(sample_names : List[str], best_fit : Fit, bootstrap_indices : Iterable[Iterable[int]],**kwargs) -> None:
+def save(observations,sample_indicators,sample_order, bootstrap_indices,best_fit,**kwargs) -> None:
     """
     Save the fit
 
     Required Arguments:
     --------------------------------
-    sample_names -- List[str]
-        The sample names
+    observations -- Ndarray (N,)
+        The assay scores
+    sample_indicators -- Ndarray (N,S)
+        The sample indicator matrix
+    
+    sample_order -- List[str] (S,)
+        The sample names corresponding to the sample indicator matrix
 
+    bootstrap_indices -- Iterable[int] (N,)
+        The indices of the bootstrap samples
+        
     best_fit -- Fit (i.e. Tuple[Tuple[float], Ndarray, Ndarray])
         The component parameters, weights, and likelihoods of the best fit
     
-    bootstrap_indices -- Iterable[Iterable[int]]
-        The indices of the bootstrap samples
+    
 
     Required Keyword Arguments:
     --------------------------------
@@ -239,8 +242,10 @@ def save(sample_names : List[str], best_fit : Fit, bootstrap_indices : Iterable[
                 "weights": best_fit.weights.tolist(),
                 "likelihoods": best_fit.likelihoods.tolist(),
                 "config": {k:v for k,v in kwargs.items() if is_serializable(v)},
-                "sample_names": sample_names,
-                "bootstrap_indices": [indices.tolist() for indices in bootstrap_indices],
+                "observations": observations.tolist(),
+                "sample_indicators": sample_indicators.tolist(),
+                "sample_order": sample_order,
+                "bootstrap_indices": bootstrap_indices.tolist(),
             }
     for k in savevals:
         if not is_serializable(savevals[k]):
@@ -308,15 +313,15 @@ def load_data(**kwargs) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     assert (S.sum(0) > 0).all(), "each sample must have at least one observation"
     return X, S, sample_names
 
-def run(**kwargs) -> Fit:
+def run(data_filepath, **kwargs) -> Fit:
     """
     Fit the multi-sample skew normal mixture model to the data
     
-    Required Keyword Arguments
+    Required Arguments
     --------------------------
     data_filepath : str
         The path to the data file (csv) containing columns sample_name, score for each observation
-
+    
     Optional Keyword Arguments:
     --------------------------
     save_path : str
@@ -324,9 +329,6 @@ def run(**kwargs) -> Fit:
     
     num_fits : int (default 25)
         The number of model fits to perform, choosing the best fit based on likelihood
-    
-    bootstrap : bool (default True)
-        Whether to bootstrap the data before fitting the model
 
     core_limit : int (default -1)
         The number of cores to use for parallelizing the model fits (n=num_fits), -1 uses all available cores
@@ -336,10 +338,7 @@ def run(**kwargs) -> Fit:
     best_fit -- Fit
         The component parameters, weights, and likelihoods of the best fit
     """
-    observations, sample_indicators, sample_names = load_data(**kwargs)
-    bootstrap_indices = [np.where(Si)[0] for Si in sample_indicators.T]
-    if kwargs.get("bootstrap",True):
-        observations,sample_indicators,bootstrap_indices = bootstrap(observations,sample_indicators,**kwargs)
+    observations, sample_indicators, sample_order, bootstrap_indices = prep_data(data_filepath,**kwargs)
     NUM_FITS = kwargs.get("num_fits", 25)
     save_path = kwargs.get("save_path", None)
     best_fit = None
@@ -352,8 +351,80 @@ def run(**kwargs) -> Fit:
     if np.isinf(best_likelihood):
         raise ValueError("Failed to fit model")
     if save_path is not None:
-        save(sample_names, best_fit, bootstrap_indices,**kwargs)
+        save(observations,sample_indicators,sample_order, bootstrap_indices,best_fit,**kwargs)
     return best_fit
+
+def prep_data(data_filepath : str,**kwargs):
+    """
+    Prepare the data for fitting the model
+
+    Required Arguments:
+    --------------------------------
+    data_filepath -- str
+        The path to the data file (json)
+        expected format:
+        [
+            {
+                "scores": List[float],
+                "labels": List[str]
+            },
+            {
+                "scores": List[float],
+                "labels": List[str]
+            },
+            ...
+        ]
+    """
+    data = pd.read_json(data_filepath)
+    assert 'scores' in data.columns and 'labels' in data.columns, f"data file must contain columns 'scores', 'labels', not {data.columns}"
+    # names of the labels that are options to model
+    label_options = {"P/LP",'B/LB','gnomAD','synonymous'}
+    # get records that are candidates for inclusion
+    candidate_observations = data[data.labels.apply(lambda x: len(set(x).intersection(label_options)) > 0)]
+    # for each instance, randomly choose one of the replicates (if there are multiple) and assign a label
+    # if the variant is synonymous, assign it that label, otherwise randomly choose one of P/LP, B/LB, or gnomAD
+    chosen_label = []
+    chosen_replicate = []
+    for _,candidate in candidate_observations.iterrows():
+        labels = set(candidate.labels).intersection(label_options)
+        assert len(labels) > 0
+        if len(labels) == 1:
+            label = next(iter(labels))
+        else:
+            if "synonymous" in candidate.labels:
+                label = "synonymous"
+            else:
+                labels = list(labels)
+                random.shuffle(labels)
+                label = labels[0]
+        assert label in label_options, f"label {label} not in {label_options}"
+        chosen_label.append(label)
+        replicates = list(candidate.scores)
+        random.shuffle(replicates)
+        chosen_replicate.append(replicates[0])
+    # assign the randomly chosen label and replicate to each candidate observation
+    candidate_observations = candidate_observations.assign(chosen_label=chosen_label,
+                                                           chosen_replicate=chosen_replicate)
+    # choose variants to include in bootstrap sample
+    bootstrap_indices = np.random.randint(0, len(candidate_observations), size=(len(candidate_observations),))
+    bootstraped_data = candidate_observations.iloc[bootstrap_indices]
+    observations = bootstraped_data.chosen_replicate.values
+    labels = bootstraped_data.chosen_label.values.tolist()
+    # create the sample indicator matrix
+    unique_labels = ['P/LP','B/LB','gnomAD','synonymous']
+    NSamples = len(set(unique_labels))
+    sample_indicators = np.zeros((len(observations), NSamples), dtype=bool)
+    labels = np.array(labels)
+    for i, label_val in enumerate(unique_labels):
+        sample_indicators[:, i] = labels == label_val
+    assert (sample_indicators.sum(0) > 0).all(), "each sample must have at least one observation"
+    assert (sample_indicators.sum(1) == 1).all(), "each observation must belong to exactly one sample"
+    assert sample_indicators.shape[0] == len(observations), "number of observations must match number of sample indicators"
+    # remove any samples that are all zeros
+    sample_indicators = sample_indicators[:,sample_indicators.sum(0) > 0]
+    return observations, sample_indicators, unique_labels, bootstrap_indices
+
 
 if __name__ == "__main__":
     Fire(run)
+    # run(data_filepath="/data/dzeiberg/mave_calibration/processed_datasets/Findlay_BRCA1_SGE.json",save_path="/tmp",num_fits=1,core_limit=1)
