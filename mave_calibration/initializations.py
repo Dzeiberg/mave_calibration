@@ -53,7 +53,7 @@ def sample_from_gmm(X, component_responsibilities):
     X_component = X[comp_mask]
     return X_component
 
-def constrained_gmm_init(X, **kwargs):
+def constrained_gmm_init(observations, sample_indicators,**kwargs):
     """
     Density Constrained initialization of the skew normal mixture model using GMM and the skew-normal method of moments
     """
@@ -61,12 +61,6 @@ def constrained_gmm_init(X, **kwargs):
     if n_components != 2:
         logging.warning(f"Density constraint only enforced for first two components; {n_components} components requested")
     n_inits = kwargs.get("n_inits", 100)
-    X = np.array(X).reshape((-1, 1))
-    buffer_stds = kwargs.get("buffer_stds", 0)
-    obs_std = X.std()
-    xlims = (X.min() - obs_std * buffer_stds,
-             X.max() + obs_std * buffer_stds)
-    gmm_component_responsibilities = get_gmm_responsibilities(X, **kwargs)
     best_parameters = []
     BestLL = -1e10
     if kwargs.get('verbose',True):
@@ -77,7 +71,20 @@ def constrained_gmm_init(X, **kwargs):
         init_method = ['mle' if i % 2 == 0 else 'mm' for i in range(n_inits)]
     else:
         init_method = [kwargs.get('skewnorm_init_method') for _ in range(n_inits)]
+    all_observations = np.concatenate(observations)
+    xlims = (all_observations.min(),all_observations.max())
     for rep in _range:
+        Nsamples = sample_indicators.shape[1]
+        sampleNumToUse = np.random.randint(0,Nsamples+1)
+        if sampleNumToUse == Nsamples:
+            X = np.concatenate(observations)
+        else:
+            # X = observations[sample_indicators[:,sampleNumToUse]]
+            X = np.concatenate([np.array(obs) for obs,ind in zip(observations, sample_indicators[:,sampleNumToUse]) if ind])
+        X = X[np.random.randint(0,len(X),size=len(X))].reshape((-1, 1))
+        if len(X) < 2:
+            continue
+        gmm_component_responsibilities = get_gmm_responsibilities(X, **kwargs)
         component_parameters = []
         comp_weights = np.zeros(n_components)
         failed_init_component = False
@@ -110,13 +117,13 @@ def constrained_gmm_init(X, **kwargs):
                 if abs(component_parameters[larger_comp_index][0]) > component_parameters[larger_comp_index][2]:
                 # if False:
                     # Scale down and flip the skew
-                    # component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * -.9,
-                    #                                             component_parameters[larger_comp_index][1],
-                    #                                             component_parameters[larger_comp_index][2]]
-                    # ONLY Scale down the skew
-                    component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * .9,
+                    component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * -.9,
                                                                 component_parameters[larger_comp_index][1],
                                                                 component_parameters[larger_comp_index][2]]
+                    # ONLY Scale down the skew
+                    # component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0] * .9,
+                    #                                             component_parameters[larger_comp_index][1],
+                    #                                             component_parameters[larger_comp_index][2]]
                 else:
                     # Scale down the scale
                     component_parameters[larger_comp_index] = [component_parameters[larger_comp_index][0],
@@ -125,20 +132,28 @@ def constrained_gmm_init(X, **kwargs):
             if density_constraint_violated(
                 component_parameters[compI], component_parameters[compJ], xlims
             ):
-                if kwargs.get('verbose',True):
-                    print(f"init {rep} failed; final parameters: {component_parameters[compI]}\t{component_parameters[compJ]}")
+                # if kwargs.get('verbose',True):
+                #     print(f"init {rep} failed; final parameters: {component_parameters[compI]}\t{component_parameters[compJ]}")
                 rep_failed = True
                 break
         if rep_failed:
             continue
+        assert not density_constraint_violated(
+            component_parameters[0], component_parameters[1], xlims
+        )
         LL = get_LL(X, component_parameters, comp_weights)
         if LL > BestLL:
             best_parameters = component_parameters
+            if kwargs.get('verbose',True):
+                print(f"init {rep} succeeded; new best LL: {LL}\n{component_parameters[0]}{component_parameters[1]}")
             BestLL = LL
     if not len(best_parameters):
         print("Could not initialize to satisfy density constraint; defaulting to random")
         best_parameters = [[-.25, X.min(), 2],
                            [.25, X.max(), 2]]
+
+    if kwargs.get('verbose', True):
+        print("FINAL INITIALIZED PARAMETERS: \n{}\n{}".format(best_parameters[0],best_parameters[1]))
     return best_parameters
     
 

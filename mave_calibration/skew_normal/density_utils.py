@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.stats as sps
+from scipy.special import logsumexp
 
 def mixture_pdf(x, params, weights):
     """
@@ -15,12 +16,27 @@ def joint_densities(x, params, weights):
     """
     return np.array([w * sps.skewnorm.pdf(x, a, loc, scale) for (a, loc, scale), w in zip(params, weights)])
 
-def component_posteriors(x, params, weights):
-    """
-    posterior probabilities of each component given x
-    """
-    joint_densities_ = joint_densities(x, params, weights)
-    return joint_densities_ / joint_densities_.sum(axis=0, keepdims=True)
+# def unstable_posteriors(x, params, weights):
+#     """
+#     posterior probabilities of each component given x
+#     """
+#     joint_densities_ = joint_densities(x, params, weights)
+#     if np.isnan(joint_densities_).any():
+#         raise ValueError(f"joint_densities_ contains NaNs: {joint_densities_}")
+#     return joint_densities_ / joint_densities_.sum(axis=0, keepdims=True)
+
+
+def component_posteriors(x, params, individual_sample_weights):
+    individual_sample_weights = np.array(individual_sample_weights)[:,None]
+    assert len(params) == individual_sample_weights.shape[0]
+    log_pdfs = np.stack([sps.skewnorm.logpdf(x.ravel(), *p) for p in params],axis=0)
+    numerators = np.zeros_like(log_pdfs)
+    numerators = log_pdfs + np.log(individual_sample_weights)
+    d = np.zeros_like(numerators[0])
+    d = logsumexp(numerators,axis=0)
+    P = np.exp(numerators-d[None])
+    P[np.isnan(P)] = 0
+    return P
 
 def canonical_to_alternate(a, loc, scale):
     """

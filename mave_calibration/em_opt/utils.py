@@ -333,9 +333,14 @@ def get_sample_weights(
     updated_weights = np.zeros_like(current_weights)
     for i in range(current_weights.shape[0]):  # for each sample
         sample_observations = observations[sample_indicators[:, i]]
-        updated_weights[i] = density_utils.component_posteriors(
+        posts = density_utils.component_posteriors(
             sample_observations, updated_component_params, current_weights[i]
-        ).mean(1)
+        )
+        updatedWeight = posts.mean(1)
+        if np.isnan(updatedWeight).any():
+            nanLocs = np.where(np.isnan(posts.T))[0]
+            raise ValueError(f"about to set updated weight to {updatedWeight}\n{sample_observations[nanLocs]}\n{updated_component_params}\n{current_weights[i]}\n{nanLocs}\n{posts.T[nanLocs]}")
+        updated_weights[i] = updatedWeight
     return updated_weights
 
 
