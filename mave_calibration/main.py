@@ -197,9 +197,6 @@ def singleFit(replicates : List[List[float]], sample_indicators : np.ndarray, **
         the likelihood of the model at each iteration
     """
     CONSTRAINED = kwargs.get("constrained", True)
-    buffer_stds = kwargs.get('buffer_stds',0)
-    if buffer_stds < 0:
-        raise ValueError("buffer_stds must be non-negative")
     all_observations = np.concatenate(replicates).reshape(-1)
     avg_score = np.array([np.mean(replicate) for replicate in replicates])
     xlims = (all_observations.min(),all_observations.max())
@@ -416,6 +413,12 @@ def bootstrap(X : np.ndarray, S : np.ndarray, **kwargs) -> Tuple[np.ndarray, np.
         offset += len(sample_bootstrap_indices)
     return XBootstrap, SBootstrap, bootstrap_indices
 
+def do_single(*args,**kwargs):
+    try:
+        return singleFit(*args,**kwargs)
+    except AssertionError:
+        return Fit(component_params=None, weights=None, likelihoods=[-1 * np.inf])
+
 def load_data(**kwargs) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Read a csv file containing the assay scores and sample names for all observations, e.g.:
@@ -451,6 +454,9 @@ def run(data_filepath, **kwargs) -> Fit:
     
     Optional Keyword Arguments:
     --------------------------
+    use_replicates : bool (default False)
+        if true, all available replicates will be used for each observation, otherwise the average score will be used
+
     save_path : str
         The path to save the results to
     
@@ -470,7 +476,7 @@ def run(data_filepath, **kwargs) -> Fit:
     save_path = kwargs.get("save_path", None)
     best_fit = None
     best_likelihood = -np.inf
-    fit_results = Parallel(n_jobs=kwargs.get('core_limit',-1))(delayed(singleFit)(observations, sample_indicators, **kwargs) for i in range(NUM_FITS))
+    fit_results = Parallel(n_jobs=kwargs.get('core_limit',-1))(delayed(do_single)(observations, sample_indicators, **kwargs) for i in range(NUM_FITS))
     for fit in fit_results:
         if fit.likelihoods[-1] > best_likelihood:
             best_fit = fit
@@ -480,79 +486,6 @@ def run(data_filepath, **kwargs) -> Fit:
     if save_path is not None:
         save(observations,sample_indicators,sample_order, bootstrap_indices,best_fit,**kwargs)
     return best_fit
-
-# def prep_data(data_filepath : str,**kwargs):
-#     """
-#     Prepare the data for fitting the model
-
-#     Required Arguments:
-#     --------------------------------
-#     data_filepath -- str
-#         The path to the data file (json)
-#         expected format:
-#         [
-#             {
-#                 "scores": List[float],
-#                 "labels": List[str]
-#             },
-#             {
-#                 "scores": List[float],
-#                 "labels": List[str]
-#             },
-#             ...
-#         ]
-#     """
-#     data = pd.read_json(data_filepath)
-#     assert 'scores' in data.columns and 'labels' in data.columns, f"data file must contain columns 'scores', 'labels', not {data.columns}"
-#     # names of the labels that are options to model
-#     label_options = {"P/LP",'B/LB','gnomAD','synonymous'}
-#     # get records that are candidates for inclusion
-#     candidate_observations = data[data.labels.apply(lambda x: len(set(x).intersection(label_options)) > 0)]
-#     # for each instance, randomly choose one of the replicates (if there are multiple) and assign a label
-#     # if the variant is synonymous, assign it that label, otherwise randomly choose one of P/LP, B/LB, or gnomAD
-#     chosen_label = []
-#     chosen_replicate = []
-#     for _,candidate in candidate_observations.iterrows():
-#         labels = set(candidate.labels).intersection(label_options)
-#         assert len(labels) > 0
-#         if len(labels) == 1:
-#             label = next(iter(labels))
-#         else:
-#             if "synonymous" in candidate.labels:
-#                 label = "synonymous"
-#             else:
-#                 labels = list(labels)
-#                 random.shuffle(labels)
-#                 label = labels[0]
-#         assert label in label_options, f"label {label} not in {label_options}"
-#         chosen_label.append(label)
-#         replicates = list(candidate.scores)
-#         random.shuffle(replicates)
-#         chosen_replicate.append(replicates[0])
-#     # assign the randomly chosen label and replicate to each candidate observation
-#     candidate_observations = candidate_observations.assign(chosen_label=chosen_label,
-#                                                            chosen_replicate=chosen_replicate)
-#     # choose variants to include in bootstrap sample
-#     bootstrap_indices = np.random.randint(0, len(candidate_observations), size=(len(candidate_observations),))
-#     bootstraped_data = candidate_observations.iloc[bootstrap_indices]
-#     observations = bootstraped_data.chosen_replicate.values
-#     labels = bootstraped_data.chosen_label.values.tolist()
-#     # create the sample indicator matrix
-#     unique_labels = ['P/LP','B/LB','gnomAD','synonymous']
-#     NSamples = len(set(unique_labels))
-#     sample_indicators = np.zeros((len(observations), NSamples), dtype=bool)
-#     labels = np.array(labels)
-#     for i, label_val in enumerate(unique_labels):
-#         sample_indicators[:, i] = labels == label_val
-#     # remove any samples that are all zeros
-#     sample_included = sample_indicators.sum(0) > 0
-#     sample_indicators = sample_indicators[:,sample_included]
-#     unique_labels = np.array(unique_labels)[sample_included]
-#     assert (sample_indicators.sum(0) > 0).all(), "each sample must have at least one observation; current counts: " + str(sample_indicators.sum(0))
-#     assert (sample_indicators.sum(1) == 1).all(), "each observation must belong to exactly one sample"
-#     assert sample_indicators.shape[0] == len(observations), "number of observations must match number of sample indicators"
-    
-#     return observations, sample_indicators, unique_labels.tolist(), bootstrap_indices
 
 def prep_data(data_filepath : str,**kwargs):
     """
@@ -574,7 +507,13 @@ def prep_data(data_filepath : str,**kwargs):
             },
             ...
         ]
+
+    Optional Arguments:
+    --------------------------------
+    - use_replicates : bool (default False)
+        if true, all available replicates will be used for each observation, otherwise the average score will be used
     """
+    use_replicates = kwargs.get("use_replicates", False)
     data = pd.read_json(data_filepath)
     assert 'scores' in data.columns and 'labels' in data.columns, f"data file must contain columns 'scores', 'labels', not {data.columns}"
     # names of the labels that are options to model
@@ -599,17 +538,14 @@ def prep_data(data_filepath : str,**kwargs):
                 label = labels[0]
         assert label in label_options, f"label {label} not in {label_options}"
         chosen_label.append(label)
-        replicates = list(candidate.scores)
-        random.shuffle(replicates)
         # chosen_replicate.append(replicates[0])
     # assign the randomly chosen label and replicate to each candidate observation
-    candidate_observations = candidate_observations.assign(chosen_label=chosen_label)#,
-                                                        #    chosen_replicate=chosen_replicate)
+    candidate_observations = candidate_observations.assign(chosen_label=chosen_label)
     # choose variants to include in bootstrap sample
     bootstrap_indices = np.random.randint(0, len(candidate_observations), size=(len(candidate_observations),))
     bootstraped_data = candidate_observations.iloc[bootstrap_indices]
     # observations = bootstraped_data.chosen_replicate.values
-    observations = list(bootstraped_data.scores)
+    observations = list(bootstraped_data.scores.apply(lambda replicates: [np.mean(replicates),] if not use_replicates else replicates).values)
     labels = bootstraped_data.chosen_label.values.tolist()
     # create the sample indicator matrix
     unique_labels = ['P/LP','B/LB','gnomAD','synonymous']
@@ -630,5 +566,4 @@ def prep_data(data_filepath : str,**kwargs):
 
 
 if __name__ == "__main__":
-    # Fire(run)
-    run(data_filepath="/data/dzeiberg/mave_calibration/processed_datasets/Hu_BRCA2_HDR_pipeline_B.json",save_path="/tmp",num_fits=1,core_limit=1)
+    Fire(run)
