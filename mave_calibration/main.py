@@ -522,22 +522,29 @@ def prep_data(data_filepath : str,**kwargs):
     candidate_observations = data[data.labels.apply(lambda x: len(set(x).intersection(label_options)) > 0)]
     # for each instance, randomly choose one of the replicates (if there are multiple) and assign a label
     # if the variant is synonymous, assign it that label, otherwise randomly choose one of P/LP, B/LB, or gnomAD
+    includes_synonymous = candidate_observations['labels'].apply(lambda x: 'synonymous' in x).sum() > 0
+    if not includes_synonymous:
+        label_options = label_options - {"synonymous"}
     chosen_label = []
-    # chosen_replicate = []
-    for _,candidate in candidate_observations.iterrows():
-        labels = set(candidate.labels).intersection(label_options)
-        assert len(labels) > 0
-        if len(labels) == 1:
-            label = next(iter(labels))
-        else:
-            if "synonymous" in candidate.labels:
-                label = "synonymous"
+    repeat = 0
+    while len(set(chosen_label)) < len(label_options) and repeat < 100:
+        # chosen_replicate = []
+        for _,candidate in candidate_observations.iterrows():
+            labels = set(candidate.labels).intersection(label_options)
+            assert len(labels) > 0
+            if len(labels) == 1:
+                label = next(iter(labels))
             else:
-                labels = list(labels)
-                random.shuffle(labels)
-                label = labels[0]
-        assert label in label_options, f"label {label} not in {label_options}"
-        chosen_label.append(label)
+                if "synonymous" in candidate.labels:
+                    label = "synonymous"
+                else:
+                    labels = list(labels)
+                    random.shuffle(labels)
+                    label = labels[0]
+            assert label in label_options, f"label {label} not in {label_options}"
+            chosen_label.append(label)
+        repeat += 1
+    assert len(set(chosen_label)) == len(label_options), f"failed to assign all labels after {repeat} attempts"
         # chosen_replicate.append(replicates[0])
     # assign the randomly chosen label and replicate to each candidate observation
     candidate_observations = candidate_observations.assign(chosen_label=chosen_label)
