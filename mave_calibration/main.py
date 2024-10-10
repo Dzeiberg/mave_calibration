@@ -1,4 +1,4 @@
-from mave_calibration.initializations import constrained_gmm_init, gmm_init
+from mave_calibration.initializations import constrained_gmm_init, gmm_init, random_init, kmeans_init
 from mave_calibration.em_opt.utils import get_sample_weights,constrained_em_iteration,em_iteration,get_likelihood
 from mave_calibration.em_opt.constraints import density_constraint_violated
 
@@ -11,7 +11,7 @@ from tqdm.autonotebook import tqdm
 import json
 import os
 from pathlib import Path
-from fire import Fire
+import fire
 from joblib import Parallel, delayed
 from sklearn.metrics import roc_auc_score
 import datetime
@@ -47,247 +47,95 @@ def draw_sample(params : List[Tuple[float]], weights : np.ndarray, sample_size :
 
 Fit = namedtuple('Fit', ['component_params', 'weights', 'likelihoods'])
 
-# def singleFit(observations : np.ndarray, sample_indicators : np.ndarray, **kwargs) -> Fit:
-#     """
-#     Run a single fit of the model
-
-#     Required Arguments:
-#     --------------------------------
-#     observations -- the assay scores (N_Observations)
-#     sample_indicators -- the sample matrix (N_ObservationsS) where S[i,j] is True if observation i is in sample j
-
-#     Optional Arguments:
-#     --------------------------------
-#     constrained -- bool (default True)
-#         Whether to enforce the density constraint on each sequential pair of components
-#     n_components -- int (default 2)
-#         The number of skew normal components in the model
-#     max_iters -- int (default 10000)
-#         The maximum number of EM iterations to perform
-#     verbose -- bool (default True)
-#         Whether to display a progress bar
-#     init_to_sample -- int (default None)
-#         If not None, initialize the model to the sample index provided, otherwise initialize to all samples
-#     replicates -- List[List[float]] (default None)
-#         If not None, the replicates of the assay scores
-#     Returns:
-#     --------------------------------
-#     component_params -- Tuple[float] len(NSamples)
-#         the parameters of the skew normal components
-#     weights -- Ndarray (NSamples, NComponents)
-#         the mixture weights of each sample
-#     likelihoods -- Ndarray (NIters,)
-#         the likelihood of the model at each iteration
-#     """
-#     CONSTRAINED = kwargs.get("constrained", True)
-#     buffer_stds = kwargs.get('buffer_stds',0)
-#     if buffer_stds < 0:
-#         raise ValueError("buffer_stds must be non-negative")
-#     xlims = (observations.min(),observations.max())
-#     N_components = kwargs.get("n_components", 2)
-#     assert N_components == 2
-#     N_samples = sample_indicators.shape[1]
-#     MAX_N_ITERS = kwargs.get("max_iters", 10000)
-#     # Initialize the components
-#     if CONSTRAINED:
-#         initial_params = constrained_gmm_init(observations,sample_indicators,**kwargs)
-#         if density_constraint_violated(*initial_params, xlims):
-#             logging.warning(f"failed to initialized components\nfinal parameters {initial_params[0]}\n{initial_params[1]}\nreturning -inf likelihood")
-#             return Fit(component_params=initial_params, weights=np.ones((N_samples, N_components)) / N_components, likelihoods=[-1 * np.inf,])
-#     else:
-#         initial_params = gmm_init(observations,**kwargs)
-#     # Initialize the mixture weights of each sample
-#     W = np.ones((N_samples, N_components)) / N_components
-#     W = get_sample_weights(observations, sample_indicators, initial_params, W)
-#     # initial likelihood
-#     likelihoods = np.array(
-#         [
-#             get_likelihood(observations, sample_indicators, initial_params, W) / len(sample_indicators),
-#         ]
-#     )
-#     # Check for bad initialization
-#     try:
-#         if CONSTRAINED:
-#             updated_component_params, updated_weights = (
-#                 constrained_em_iteration(observations, sample_indicators, initial_params, W, xlims, iterNum=0)
-#             )
-#         else:
-#             updated_component_params, updated_weights = em_iteration(
-#                 observations, sample_indicators, initial_params, W
-#             )
-#     except ZeroDivisionError:
-#         logging.warning("ZeroDivisionError")
-#         return Fit(component_params=initial_params, weights=W, likelihoods=[*likelihoods, -1 * np.inf])
-#     likelihoods = np.array(
-#         [
-#             *likelihoods,
-#             get_likelihood(observations, sample_indicators, updated_component_params, updated_weights)
-#             / len(sample_indicators),
-#         ]
-#     )
-#     # Run the EM algorithm
-#     if kwargs.get("verbose",True):
-#         pbar = tqdm(total=MAX_N_ITERS)
-#     for i in range(MAX_N_ITERS):
-#         try:
-#             if CONSTRAINED:
-#                 updated_component_params, updated_weights = (
-#                     constrained_em_iteration(
-#                         observations,sample_indicators, updated_component_params, updated_weights, xlims, iterNum=i+1,
-#                     )
-#                 )
-#             else:
-#                 updated_component_params, updated_weights = em_iteration(
-#                     observations,sample_indicators, updated_component_params, updated_weights
-#                 )
-#         except ZeroDivisionError:
-#             print("ZeroDivisionError")
-#             return Fit(component_params=initial_params, weights=W, likelihoods=[*likelihoods, -1 * np.inf])
-#         likelihoods = np.array(
-#             [
-#                 *likelihoods,
-#                 get_likelihood(
-#                     observations,sample_indicators, updated_component_params, updated_weights
-#                 )
-#                 / len(sample_indicators),
-#             ]
-#         )
-#         if kwargs.get("verbose",True):
-#             pbar.set_postfix({"likelihood": f"{likelihoods[-1]:.6f}"})
-#             pbar.update(1)
-#         if kwargs.get('early_stopping',True) and i > 51 and (np.abs(likelihoods[-50:] - likelihoods[-51:-1]) < 1e-10).all():
-#             break
-#     if kwargs.get("verbose",True):
-#         pbar.close()
-#     if CONSTRAINED:
-#         assert not density_constraint_violated(
-#             updated_component_params[0], updated_component_params[1], xlims
-#         )
-#     return Fit(component_params=updated_component_params, weights=updated_weights, likelihoods=likelihoods)
-
-def singleFit(replicates : List[List[float]], sample_indicators : np.ndarray, **kwargs) -> Fit:
-    """
-    Run a single fit of the model
-
-    Required Arguments:
-    --------------------------------
-    replicates -- List[List[float]] -- the assay scores (N_Observations)
-
-    sample_indicators -- the sample matrix (N_ObservationsS) where S[i,j] is True if observation i is in sample j
-
-    Optional Arguments:
-    --------------------------------
-    constrained -- bool (default True)
-        Whether to enforce the density constraint on each sequential pair of components
-    n_components -- int (default 2)
-        The number of skew normal components in the model
-    max_iters -- int (default 10000)
-        The maximum number of EM iterations to perform
-    verbose -- bool (default True)
-        Whether to display a progress bar
-    init_to_sample -- int (default None)
-        If not None, initialize the model to the sample index provided, otherwise initialize to all samples
-    Returns:
-    --------------------------------
-    component_params -- Tuple[float] len(NSamples)
-        the parameters of the skew normal components
-    weights -- Ndarray (NSamples, NComponents)
-        the mixture weights of each sample
-    likelihoods -- Ndarray (NIters,)
-        the likelihood of the model at each iteration
-    """
-    CONSTRAINED = kwargs.get("constrained", True)
-    all_observations = np.concatenate(replicates).reshape(-1)
-    avg_score = np.array([np.mean(replicate) for replicate in replicates])
-    xlims = (all_observations.min(),all_observations.max())
-    N_components = kwargs.get("n_components", 2)
-    assert N_components == 2
-    N_samples = sample_indicators.shape[1]
+def single_fit(observations,sample_indicators,**kwargs):
+    CONSTRAINED=kwargs.get("Constrained",True)
     MAX_N_ITERS = kwargs.get("max_iters", 10000)
-    # Initialize the components
-    if CONSTRAINED:
-        initial_params = constrained_gmm_init(replicates,sample_indicators,**kwargs)
-        if density_constraint_violated(*initial_params, xlims):
-            logging.warning(f"failed to initialized components\nfinal parameters {initial_params[0]}\n{initial_params[1]}\nreturning -inf likelihood")
-            return Fit(component_params=initial_params, weights=np.ones((N_samples, N_components)) / N_components, likelihoods=[-1 * np.inf,])
-    else:
-        initial_params = gmm_init(all_observations,**kwargs)
-    # Initialize the mixture weights of each sample
+    verbose = kwargs.get("verbose",True)
+    xlims= (observations.min(),observations.max())
+    N_samples = sample_indicators.shape[1]
+    N_components = 2
     W = np.ones((N_samples, N_components)) / N_components
-    W = get_sample_weights(avg_score, sample_indicators, initial_params, W)
+    try:
+        initial_params,kmeans = kmeans_init(observations, n_clusters=N_components)
+    except ValueError:
+        logging.warning("Failed to initialize")
+        return dict(component_params=[[] for _ in range(N_components)],
+                    weights=W,
+                    likelihoods=[-1 * np.inf])
+    W = get_sample_weights(observations, sample_indicators, initial_params, W)
+    history = [dict(component_params=initial_params, weights=W)]
     # initial likelihood
     likelihoods = np.array(
         [
-            get_likelihood(avg_score, sample_indicators, initial_params, W) / len(sample_indicators),
+            get_likelihood(observations, sample_indicators, initial_params, W) / len(sample_indicators),
         ]
     )
     # Check for bad initialization
     try:
-        if CONSTRAINED:
-            updated_component_params, updated_weights = (
-                constrained_em_iteration(avg_score, sample_indicators, initial_params, W, xlims, iterNum=0)
-            )
-        else:
-            updated_component_params, updated_weights = em_iteration(
-                avg_score, sample_indicators, initial_params, W
-            )
+        updated_component_params, updated_weights = (
+            constrained_em_iteration(observations, sample_indicators, initial_params, W, xlims, iterNum=0)
+        )
     except ZeroDivisionError:
         logging.warning("ZeroDivisionError")
-        return Fit(component_params=initial_params, weights=W, likelihoods=[*likelihoods, -1 * np.inf])
+        return dict(component_params=initial_params, weights=W, likelihoods=[*likelihoods, -1 * np.inf],kmeans=kmeans)
     likelihoods = np.array(
         [
             *likelihoods,
-            get_likelihood(avg_score, sample_indicators, updated_component_params, updated_weights)
+            get_likelihood(observations, sample_indicators, updated_component_params, updated_weights)
             / len(sample_indicators),
         ]
     )
     # Run the EM algorithm
-    if kwargs.get("verbose",True):
-        pbar = tqdm(total=MAX_N_ITERS)
-    indicators = np.concatenate([np.tile(sample_indicators[j], (len(replicates[j]),1)) for j in range(len(replicates))])
-    assert len(indicators) == len(all_observations)
+    if verbose:
+        pbar = tqdm(total=MAX_N_ITERS,leave=False,desc="EM Iteration")
+    
     for i in range(MAX_N_ITERS):
+        history.append(dict(component_params=updated_component_params, weights=updated_weights))
+        if np.isnan(likelihoods).any():
+            raise ValueError()
+        if np.isnan(np.concatenate(updated_component_params)).any():
+            raise ValueError()
+        if np.isnan(updated_weights).any():
+            raise ValueError()
         if np.isnan(np.concatenate(updated_component_params)).any():
             raise ValueError(f"NaN in updated component params at iteration {i}\n{updated_component_params}")
         if np.isnan(updated_weights).any():
             raise ValueError(f"NaN in updated weights at iteration {i}\n{updated_weights}")
         # observations = np.array([np.random.choice(observation_replicates) for observation_replicates in replicates]).reshape(-1,)
-        try:
-            if CONSTRAINED:
-                updated_component_params, updated_weights = (
-                    constrained_em_iteration(
-                        all_observations,indicators, updated_component_params, updated_weights, xlims, iterNum=i+1,
-                    )
+        # try:
+        if CONSTRAINED:
+            updated_component_params, updated_weights = (
+                constrained_em_iteration(
+                    observations,sample_indicators, updated_component_params, updated_weights, xlims, iterNum=i+1,
                 )
-            else:
-                updated_component_params, updated_weights = em_iteration(
-                    all_observations,indicators, updated_component_params, updated_weights
-                )
-        except ZeroDivisionError:
-            print("ZeroDivisionError")
-            return Fit(component_params=initial_params, weights=W, likelihoods=[*likelihoods, -1 * np.inf])
+            )
+        else:
+            updated_component_params, updated_weights = em_iteration(
+                observations,sample_indicators, updated_component_params, updated_weights
+            )
         likelihoods = np.array(
             [
                 *likelihoods,
                 get_likelihood(
-                    all_observations,indicators, updated_component_params, updated_weights
+                    observations,sample_indicators, updated_component_params, updated_weights
                 )
-                / len(indicators),
+                / len(sample_indicators),
             ]
         )
         if kwargs.get("verbose",True):
             pbar.set_postfix({"likelihood": f"{likelihoods[-1]:.6f}"})
             pbar.update(1)
-        if kwargs.get('early_stopping',True) and i > 51 and (np.abs(likelihoods[-50:] - likelihoods[-51:-1]) < 1e-10).all():
+        if kwargs.get('early_stopping',True) and i >= 1 and (np.abs(likelihoods[-1] - likelihoods[-2]) < 1e-10).all():
             break
+    history.append(dict(component_params=updated_component_params, weights=updated_weights))
     if kwargs.get("verbose",True):
         pbar.close()
     if CONSTRAINED:
         assert not density_constraint_violated(
             updated_component_params[0], updated_component_params[1], xlims
         )
-    return Fit(component_params=updated_component_params, weights=updated_weights, likelihoods=likelihoods)
-
+        
+    return dict(component_params=updated_component_params, weights=updated_weights, likelihoods=likelihoods, history=history,kmeans=kmeans)
 
 def prior_from_weights(weights : np.ndarray, population_idx : int=2, controls_idx : int=1, pathogenic_idx : int=0) -> float:
     """
@@ -362,14 +210,16 @@ def save(observations,sample_indicators,sample_order, bootstrap_indices,best_fit
     except AttributeError:
         pass
     savevals = {
-                "component_params": best_fit.component_params,
-                "weights": best_fit.weights.tolist(),
-                "likelihoods": best_fit.likelihoods.tolist(),
+                "component_params": best_fit.get('component_params'),
+                "weights": best_fit.get('weights').tolist(),
+                "likelihoods": best_fit.get('likelihoods').tolist(),
                 "config": {k:v for k,v in kwargs.items() if is_serializable(v)},
                 "observations": observations,
                 "sample_indicators": sample_indicators.tolist(),
                 "sample_order": sample_order,
                 "bootstrap_indices": bootstrap_indices.tolist(),
+                "history": [(hist['component_params'], hist['weights'].tolist()) for hist in best_fit.get("history",[])],
+                "kmeans_centers": best_fit['kmeans'].cluster_centers_.tolist() if 'kmeans' in best_fit else None
             }
     for k in savevals:
         if not is_serializable(savevals[k]):
@@ -412,12 +262,6 @@ def bootstrap(X : np.ndarray, S : np.ndarray, **kwargs) -> Tuple[np.ndarray, np.
         SBootstrap[offset:offset + len(sample_bootstrap_indices), sample] = True
         offset += len(sample_bootstrap_indices)
     return XBootstrap, SBootstrap, bootstrap_indices
-
-def do_single(*args,**kwargs):
-    try:
-        return singleFit(*args,**kwargs)
-    except AssertionError:
-        return Fit(component_params=None, weights=None, likelihoods=[-1 * np.inf])
 
 def load_data(**kwargs) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
@@ -476,16 +320,33 @@ def run(data_filepath, **kwargs) -> Fit:
     save_path = kwargs.get("save_path", None)
     best_fit = None
     best_likelihood = -np.inf
-    fit_results = Parallel(n_jobs=kwargs.get('core_limit',-1))(delayed(do_single)(observations, sample_indicators, **kwargs) for i in range(NUM_FITS))
-    for fit in fit_results:
-        if fit.likelihoods[-1] > best_likelihood:
+    fit_results = Parallel(n_jobs=kwargs.get('core_limit',-1))(delayed(runFitIteration)(observations,
+                                                                                        sample_indicators, **kwargs) \
+                                                                    for i in range(NUM_FITS))
+    for (fit,fit_likelihood) in fit_results:
+        if fit_likelihood > best_likelihood:
             best_fit = fit
-            best_likelihood = fit.likelihoods[-1]
+            best_likelihood = fit_likelihood
     if np.isinf(best_likelihood):
         raise ValueError("Failed to fit model")
     if save_path is not None:
         save(observations,sample_indicators,sample_order, bootstrap_indices,best_fit,**kwargs)
-    return best_fit
+    # return best_fit
+
+def runFitIteration(observations, sample_indicators, **kwargs):
+    bootstrap_sample_indices = [np.random.choice(np.where(sample_i)[0],
+                                                         sample_i.sum(),
+                                                         replace=True) for sample_i in sample_indicators.T]
+    indices = np.concatenate(bootstrap_sample_indices)
+    try:
+        iter_fit = single_fit(observations[indices],sample_indicators[indices],**kwargs)
+    except AssertionError:
+        iter_fit = dict(component_params=None, weights=None, likelihoods=[-1 * np.inf])
+        return iter_fit, -1 * np.inf
+    iteration_ll = get_likelihood(observations,sample_indicators,
+                                    iter_fit.get('component_params'),
+                                    iter_fit.get('weights'))/len(observations)
+    return iter_fit, iteration_ll
 
 def prep_data(data_filepath : str,**kwargs):
     """
@@ -513,64 +374,67 @@ def prep_data(data_filepath : str,**kwargs):
     - use_replicates : bool (default False)
         if true, all available replicates will be used for each observation, otherwise the average score will be used
     """
-    use_replicates = kwargs.get("use_replicates", False)
-    data = pd.read_json(data_filepath)
-    assert 'scores' in data.columns and 'labels' in data.columns, f"data file must contain columns 'scores', 'labels', not {data.columns}"
-    # names of the labels that are options to model
-    label_options = {"P/LP",'B/LB','gnomAD','synonymous'}
-    # get records that are candidates for inclusion
-    candidate_observations = data[data.labels.apply(lambda x: len(set(x).intersection(label_options)) > 0)]
-    # for each instance, randomly choose one of the replicates (if there are multiple) and assign a label
-    # if the variant is synonymous, assign it that label, otherwise randomly choose one of P/LP, B/LB, or gnomAD
-    includes_synonymous = candidate_observations['labels'].apply(lambda x: 'synonymous' in x).sum() > 0
-    if not includes_synonymous:
-        label_options = label_options - {"synonymous"}
-    chosen_label = []
-    repeat = 0
-    while len(set(chosen_label)) < len(label_options) and repeat < 100:
-        # chosen_replicate = []
-        for _,candidate in candidate_observations.iterrows():
-            labels = set(candidate.labels).intersection(label_options)
-            assert len(labels) > 0
-            if len(labels) == 1:
-                label = next(iter(labels))
-            else:
-                if "synonymous" in candidate.labels:
-                    label = "synonymous"
+    restarts = 0
+    all_samples_represented = False
+    while not all_samples_represented and restarts < 100:
+        use_replicates = kwargs.get("use_replicates", False)
+        data = pd.read_json(data_filepath)
+        assert 'scores' in data.columns and 'labels' in data.columns, f"data file must contain columns 'scores', 'labels', not {data.columns}"
+        # names of the labels that are options to model
+        label_options = {"P/LP",'B/LB','gnomAD','synonymous'}
+        # get records that are candidates for inclusion
+        candidate_observations = data[data.labels.apply(lambda x: len(set(x).intersection(label_options)) > 0)]
+        # if the variant is synonymous, assign it that label, otherwise randomly choose one of P/LP, B/LB, or gnomAD
+        includes_synonymous = candidate_observations['labels'].apply(lambda x: 'synonymous' in x).sum() > 0
+        if not includes_synonymous:
+            label_options = label_options - {"synonymous"}
+        repeat = 0
+        chosen_label = []
+        while len(set(chosen_label)) < len(label_options) and repeat < 100:
+            chosen_label = []
+            for _,candidate in candidate_observations.iterrows():
+                labels = set(candidate.labels).intersection(label_options)
+                assert len(labels) > 0
+                if len(labels) == 1:
+                    label = next(iter(labels))
                 else:
-                    labels = list(labels)
-                    random.shuffle(labels)
-                    label = labels[0]
-            assert label in label_options, f"label {label} not in {label_options}"
-            chosen_label.append(label)
-        repeat += 1
-    assert len(set(chosen_label)) == len(label_options), f"failed to assign all labels after {repeat} attempts"
-        # chosen_replicate.append(replicates[0])
-    # assign the randomly chosen label and replicate to each candidate observation
-    candidate_observations = candidate_observations.assign(chosen_label=chosen_label)
-    # choose variants to include in bootstrap sample
-    bootstrap_indices = np.random.randint(0, len(candidate_observations), size=(len(candidate_observations),))
-    bootstraped_data = candidate_observations.iloc[bootstrap_indices]
-    # observations = bootstraped_data.chosen_replicate.values
-    observations = list(bootstraped_data.scores.apply(lambda replicates: [np.mean(replicates),] if not use_replicates else replicates).values)
-    labels = bootstraped_data.chosen_label.values.tolist()
-    # create the sample indicator matrix
-    unique_labels = ['P/LP','B/LB','gnomAD','synonymous']
-    NSamples = len(set(unique_labels))
-    sample_indicators = np.zeros((len(observations), NSamples), dtype=bool)
-    labels = np.array(labels)
-    for i, label_val in enumerate(unique_labels):
-        sample_indicators[:, i] = labels == label_val
-    # remove any samples that are all zeros
-    sample_included = sample_indicators.sum(0) > 0
-    sample_indicators = sample_indicators[:,sample_included]
-    unique_labels = np.array(unique_labels)[sample_included]
-    assert (sample_indicators.sum(0) > 0).all(), "each sample must have at least one observation; current counts: " + str(sample_indicators.sum(0))
-    assert (sample_indicators.sum(1) == 1).all(), "each observation must belong to exactly one sample"
-    assert sample_indicators.shape[0] == len(observations), "number of observations must match number of sample indicators"
-    
-    return observations, sample_indicators, unique_labels.tolist(), bootstrap_indices
+                    if "synonymous" in candidate.labels:
+                        label = "synonymous"
+                    else:
+                        labels = list(labels)
+                        random.shuffle(labels)
+                        label = labels[0]
+                assert label in label_options, f"label {label} not in {label_options}"
+                chosen_label.append(label)
+            repeat += 1
+        assert len(set(chosen_label)) == len(label_options), f"failed to assign all labels after {repeat} attempts"
+        # assign the randomly chosen label
+        candidate_observations = candidate_observations.assign(chosen_label=chosen_label)
+
+        # choose variants to include in bootstrap sample
+        bootstrap_indices = np.random.randint(0, len(candidate_observations), size=(len(candidate_observations),))
+        bootstraped_data = candidate_observations.iloc[bootstrap_indices]
+        observations = np.array(list(bootstraped_data.scores.apply(lambda replicates: [np.mean(replicates),] if not use_replicates else replicates).values)).ravel()
+        labels = bootstraped_data.chosen_label.values.tolist()
+        # create the sample indicator matrix
+        NSamples = len(set(label_options))
+        sample_indicators = np.zeros((len(observations), NSamples), dtype=bool)
+        sample_names = ["P/LP",'B/LB','gnomAD']
+        if includes_synonymous:
+            sample_names.append("synonymous")
+        labels = np.array(labels)
+        for i, label_val in enumerate(sample_names):
+            sample_indicators[:, i] = labels == label_val
+        # remove any samples that are all zeros
+        all_samples_represented = (sample_indicators.sum(0) > 0).all()
+    if all_samples_represented:
+        assert (sample_indicators.sum(0) > 0).all(), "each sample must have at least one observation; current counts: " + str(sample_indicators.sum(0))
+        assert (sample_indicators.sum(1) == 1).all(), "each observation must belong to exactly one sample"
+        assert sample_indicators.shape[0] == len(observations), "number of observations must match number of sample indicators"
+        return observations, sample_indicators, sample_names, bootstrap_indices
+    else:
+        raise ValueError("Failed to represent all samples")
 
 
-if __name__ == "__main__":
-    Fire(run)
+if __name__ == '__main__':
+  fire.Fire(run)

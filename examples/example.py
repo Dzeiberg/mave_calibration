@@ -20,6 +20,10 @@ def runExample():
     # run the calibration
     bestFit = singleFit(observations, sample_indicators,
                    max_iters=10000, n_inits=100, verbose=True)
+    print_results(observations, sample_names, bestFit)
+
+
+def print_results(observations, sample_names, bestFit):
     score_range =np.arange(observations.min(), observations.max(), .01)
     lrPlus = get_lrPlus(score_range, sample_names.index('B/LB'), bestFit)
     prior = prior_from_weights(bestFit.weights,

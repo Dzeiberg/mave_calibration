@@ -6,6 +6,7 @@ from sklearn.cluster import KMeans
 import numpy as np
 from tqdm import trange
 import logging
+import scipy.stats as sps
 
 from scipy.stats._warnings_errors import FitError
 
@@ -189,24 +190,94 @@ def get_LL(X, component_parameters, comp_weights):
     """
     return np.log(density_utils.mixture_pdf(X, component_parameters, comp_weights)).sum() / len(X)
 
+def fix_to_satisfy_density_constraint(component_parameters, xlims):
+    n_components = len(component_parameters)
+    rep_failed = False
+    for compI, compJ in zip(range(0,n_components-1),range(1,n_components)):
+        if rep_failed:
+            break
+        for _ in range(300):
+            if not density_constraint_violated(
+                component_parameters[compI], component_parameters[compJ], xlims
+            ):
+                break
+            component_parameters[compI] = [component_parameters[compI][0] - .05 * abs(component_parameters[compI][0]),
+                                           component_parameters[compI][1],
+                                           component_parameters[compI][2]]
+            component_parameters[compJ] = [component_parameters[compJ][0] + .05 * abs(component_parameters[compJ][0]),
+                                           component_parameters[compJ][1],
+                                           component_parameters[compJ][2]]
+
+        if density_constraint_violated(
+            component_parameters[compI], component_parameters[compJ], xlims
+        ):
+            rep_failed = True
+            break
+    if rep_failed:
+        return [[] for _ in range(n_components)]
+    assert not density_constraint_violated(
+        component_parameters[0], component_parameters[1], xlims
+    )
+    return component_parameters
+
 def kmeans_init(X, **kwargs):
     """
     Initialize the parameters of the skew normal mixture model using kmeans and the method of moments
+
+    Arguments:
+    X: np.array (N,): observed instances
+
+    Optional Keyword Arguments:
+    - n_clusters: int: number of clusters to use in kmeans. Default: 2
+    - kmeans_init: str: initialization method for kmeans. Options: ["random", "k-means++"]. Default: "random"
+    - skewnorm_init_method: str: method to use for fitting the skew normal distribution. Options: ["mle", "mm"]. Default: "mle"
     """
-    n_clusters = kwargs.get("n_clusters", 2)
-    init = kwargs.get("kmeans_init", "random")
-    kmeans = KMeans(n_clusters=n_clusters, init=init)
+    repeat = 0
+    while repeat < 1000:
+        n_clusters = kwargs.get("n_clusters", 2)
+        init = kwargs.get("kmeans_init", "random")
+        kmeans = KMeans(n_clusters=n_clusters, init=init)
 
-    X = np.array(X).reshape((-1, 1))
+        X = np.array(X).reshape((-1, 1))
+        kmeans.fit(X)
+        cluster_assignments = kmeans.predict(X)
 
-    # cluster_assignments = kmeans.fit_predict(X)
-    kmeans.fit(X)
-    kmeans.cluster_centers_ = np.sort(kmeans.cluster_centers_, axis=0)
-    cluster_assignments = kmeans.predict(X)
+        component_parameters = []
+        for i in range(n_clusters):
+            X_cluster = X[cluster_assignments == i]
+            loc,scale = sps.norm.fit(X_cluster)
+            a = np.random.uniform(-.25,.25)
+            component_parameters.append((a,float(loc),float(scale)))
+        component_parameters = fix_to_satisfy_density_constraint(component_parameters,(X.min(),X.max()))
+        if not len(component_parameters[0]):
+            repeat += 1
+        else:
+            return component_parameters, kmeans
+    raise ValueError("Failed to initialize")
 
-    component_parameters = []
-    for i in range(n_clusters):
-        X_cluster = X[cluster_assignments == i]
-        params = fit_skew_normal(X_cluster)
-        component_parameters.append(params)
-    return component_parameters
+def random_init(X, **kwargs):
+    """
+    Initialize the parameters of the skew normal mixture model using random initialization
+
+    Arguments:
+    X: np.array (N,): observed instances
+
+    Optional Keyword Arguments:
+    - n_clusters: int: number of clusters to use in kmeans. Default: 2
+    - skewnorm_init_method: str: method to use for fitting the skew normal distribution. Options: ["mle", "mm"]. Default: "mle"
+    """
+    repeat = 0
+    while repeat < 1000:
+        n_clusters = kwargs.get("n_clusters", 2)
+        component_parameters = []
+        for i in range(n_clusters):
+            loc = np.random.uniform(X.min(), X.max())
+            scale = np.random.uniform(1e-5, X.max() - X.min())
+            a = np.random.uniform(kwargs.get('skew_min',-5),kwargs.get('skew_max',5))
+            component_parameters.append((a,loc,scale))
+        component_parameters = fix_to_satisfy_density_constraint(component_parameters,(X.min(),X.max()))
+        if not len(component_parameters[0]):
+            repeat += 1
+        else:
+            return component_parameters
+    raise ValueError("Failed to initialize")
