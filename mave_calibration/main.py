@@ -287,6 +287,14 @@ def load_data(**kwargs) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     assert (S.sum(0) > 0).all(), "each sample must have at least one observation"
     return X, S, sample_names
 
+def downsample(observations, sample_indicators, proportion):
+    NSamples = sample_indicators.sum(0)
+    downsampleNum = np.round(NSamples * proportion).astype(int)
+    indices = np.concatenate([np.random.choice(np.where(sample_indicators[:,i])[0], size=downsampleNum[i], replace=False) for i in range(sample_indicators.shape[1])])
+    downsampled_observations = observations[indices]
+    downsampled_sample_indicators = sample_indicators[indices]
+    return downsampled_observations, downsampled_sample_indicators, indices
+
 def run(data_filepath, **kwargs) -> Fit:
     """
     Fit the multi-sample skew normal mixture model to the data
@@ -309,6 +317,9 @@ def run(data_filepath, **kwargs) -> Fit:
 
     core_limit : int (default -1)
         The number of cores to use for parallelizing the model fits (n=num_fits), -1 uses all available cores
+    
+    downsample_proportion : float (default 1.0)
+        The proportion of the data to use for fitting the model
 
     Returns:
     --------------------------
@@ -316,6 +327,9 @@ def run(data_filepath, **kwargs) -> Fit:
         The component parameters, weights, and likelihoods of the best fit
     """
     observations, sample_indicators, sample_order, bootstrap_indices = prep_data(data_filepath,**kwargs)
+    downsample_proportion = kwargs.get("downsample_proportion",1.0)
+    if downsample_proportion < 1.0:
+        observations, sample_indicators, bootstrap_indices = downsample(observations, sample_indicators, downsample_proportion)
     NUM_FITS = kwargs.get("num_fits", 25)
     save_path = kwargs.get("save_path", None)
     best_fit = None
