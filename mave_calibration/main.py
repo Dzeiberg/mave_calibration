@@ -307,8 +307,6 @@ def run(data_filepath, **kwargs) -> Fit:
     
     Optional Keyword Arguments:
     --------------------------
-    use_replicates : bool (default False)
-        if true, all available replicates will be used for each observation, otherwise the average score will be used
 
     save_path : str
         The path to save the results to
@@ -386,8 +384,12 @@ def prep_data(data_filepath : str,**kwargs):
     """
     restarts = 0
     all_samples_represented = False
+    data = pd.read_csv(data_filepath).assign(labels=lambda x: x.labels.apply(literal_eval))
+    missing_data = data.auth_reported_score.isna() | data.labels.isna()
+    if missing_data.sum() > 0:
+        logging.warning(f"Missing data in {missing_data.sum()} observations")
+        data = data[~missing_data]
     while not all_samples_represented and restarts < 100:
-        data = pd.read_csv(data_filepath).assign(labels=lambda x: x.labels.apply(literal_eval))
         assert 'auth_reported_score' in data.columns and 'labels' in data.columns, f"data file must contain columns 'auth_reported_score', 'labels', not {data.columns}"
         # names of the labels that are options to model
         label_options = {"P/LP",'B/LB','gnomAD','synonymous'}
@@ -447,10 +449,4 @@ def prep_data(data_filepath : str,**kwargs):
 
 
 if __name__ == '__main__':
-#   fire.Fire(run)
-    run(num_fits=100,
-        n_inits=100,
-        core_limit=100,
-        data_filepath="/data/dzeiberg/IGVF-cvfg-pillar-project/Pillar_project_data_files/individual_datasets/BRCA1_Findlay_2018.csv",
-        save_path="/data/dzeiberg/mave_calibration/test_fit_10_19_24",
-        dataset_id="BRCA1_Findlay_2018")
+  fire.Fire(run)
