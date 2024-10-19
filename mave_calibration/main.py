@@ -17,6 +17,7 @@ from sklearn.metrics import roc_auc_score
 import datetime
 from typing import List, Tuple, Iterable
 import random
+from ast import literal_eval
 
 def draw_sample(params : List[Tuple[float]], weights : np.ndarray, sample_size : int=1) -> np.ndarray:
     """
@@ -373,27 +374,21 @@ def prep_data(data_filepath : str,**kwargs):
         expected format:
         [
             {
-                "scores": List[float],
+                "auth_reported_score": float,
                 "labels": List[str]
             },
             {
-                "scores": List[float],
+                "auth_reported_score": float,
                 "labels": List[str]
             },
             ...
         ]
-
-    Optional Arguments:
-    --------------------------------
-    - use_replicates : bool (default False)
-        if true, all available replicates will be used for each observation, otherwise the average score will be used
     """
     restarts = 0
     all_samples_represented = False
     while not all_samples_represented and restarts < 100:
-        use_replicates = kwargs.get("use_replicates", False)
-        data = pd.read_json(data_filepath)
-        assert 'scores' in data.columns and 'labels' in data.columns, f"data file must contain columns 'scores', 'labels', not {data.columns}"
+        data = pd.read_csv(data_filepath).assign(labels=lambda x: x.labels.apply(literal_eval))
+        assert 'auth_reported_score' in data.columns and 'labels' in data.columns, f"data file must contain columns 'auth_reported_score', 'labels', not {data.columns}"
         # names of the labels that are options to model
         label_options = {"P/LP",'B/LB','gnomAD','synonymous'}
         # get records that are candidates for inclusion
@@ -428,7 +423,8 @@ def prep_data(data_filepath : str,**kwargs):
         # choose variants to include in bootstrap sample
         bootstrap_indices = np.random.randint(0, len(candidate_observations), size=(len(candidate_observations),))
         bootstraped_data = candidate_observations.iloc[bootstrap_indices]
-        observations = np.array(list(bootstraped_data.scores.apply(lambda replicates: [np.mean(replicates),] if not use_replicates else replicates).values)).ravel()
+        # observations = np.array(list(bootstraped_data.scores.apply(lambda replicates: [np.mean(replicates),] if not use_replicates else replicates).values)).ravel()
+        observations = np.array(list(bootstraped_data.auth_reported_score.values))
         labels = bootstraped_data.chosen_label.values.tolist()
         # create the sample indicator matrix
         NSamples = len(set(label_options))
@@ -451,4 +447,10 @@ def prep_data(data_filepath : str,**kwargs):
 
 
 if __name__ == '__main__':
-  fire.Fire(run)
+#   fire.Fire(run)
+    run(num_fits=100,
+        n_inits=100,
+        core_limit=100,
+        data_filepath="/data/dzeiberg/IGVF-cvfg-pillar-project/Pillar_project_data_files/individual_datasets/BRCA1_Findlay_2018.csv",
+        save_path="/data/dzeiberg/mave_calibration/test_fit_10_19_24",
+        dataset_id="BRCA1_Findlay_2018")
