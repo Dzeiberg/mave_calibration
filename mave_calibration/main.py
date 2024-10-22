@@ -48,7 +48,14 @@ def draw_sample(params : List[Tuple[float]], weights : np.ndarray, sample_size :
 
 Fit = namedtuple('Fit', ['component_params', 'weights', 'likelihoods'])
 
-def single_fit(observations,sample_indicators,**kwargs):
+def weightConstraints(observations, sample_indicators, W0,benignSampleIdx,constraints,**kwargs):
+    functionally_normal_index = W0[benignSampleIdx].argmax() # benign variants are mostly functionally normal
+    for sampleNumber, fixedFractionNormal in constraints:
+        W0[sampleNumber, functionally_normal_index] = fixedFractionNormal
+        W0[sampleNumber, 1-functionally_normal_index] = 1 - fixedFractionNormal
+    return W0
+
+def single_fit(observations,sample_indicators, sample_order,**kwargs):
     CONSTRAINED=kwargs.get("Constrained",True)
     MAX_N_ITERS = kwargs.get("max_iters", 10000)
     verbose = kwargs.get("verbose",True)
@@ -64,6 +71,14 @@ def single_fit(observations,sample_indicators,**kwargs):
                     weights=W,
                     likelihoods=[-1 * np.inf])
     W = get_sample_weights(observations, sample_indicators, initial_params, W)
+    constraints = []
+    try:
+        idxSynonymous = sample_order.index("synonymous")
+    except ValueError:
+        idxSynonymous = None
+    if idxSynonymous is not None:
+        constraints.append((idxSynonymous, 1.0),)
+    W = weightConstraints(observations, sample_indicators, W, sample_order.index('B/LB'),constraints,**kwargs)
     history = [dict(component_params=initial_params, weights=W)]
     # initial likelihood
     likelihoods = np.array(
@@ -333,9 +348,13 @@ def run(data_filepath, **kwargs) -> Fit:
     save_path = kwargs.get("save_path", None)
     best_fit = None
     best_likelihood = -np.inf
-    fit_results = Parallel(n_jobs=kwargs.get('core_limit',-1))(delayed(runFitIteration)(observations,
-                                                                                        sample_indicators, **kwargs) \
-                                                                    for i in range(NUM_FITS))
+    cores = kwargs.get('core_limit',-1)
+    if cores == 1:
+        fit_results = [runFitIteration(observations, sample_indicators, sample_order,**kwargs) for i in range(NUM_FITS)]
+    else:
+        fit_results = Parallel(n_jobs=kwargs.get('core_limit',-1))(delayed(runFitIteration)(observations,
+                                                                                            sample_indicators, sample_order,**kwargs) \
+                                                                        for i in range(NUM_FITS))
     for (fit,fit_likelihood) in fit_results:
         if fit_likelihood > best_likelihood:
             best_fit = fit
@@ -346,13 +365,13 @@ def run(data_filepath, **kwargs) -> Fit:
         save(observations,sample_indicators,sample_order, bootstrap_indices,best_fit,**kwargs)
     # return best_fit
 
-def runFitIteration(observations, sample_indicators, **kwargs):
+def runFitIteration(observations, sample_indicators, sample_order, **kwargs):
     bootstrap_sample_indices = [np.random.choice(np.where(sample_i)[0],
                                                          sample_i.sum(),
                                                          replace=True) for sample_i in sample_indicators.T]
     indices = np.concatenate(bootstrap_sample_indices)
     try:
-        iter_fit = single_fit(observations[indices],sample_indicators[indices],**kwargs)
+        iter_fit = single_fit(observations[indices],sample_indicators[indices],sample_order,**kwargs)
     except AssertionError:
         iter_fit = dict(component_params=None, weights=None, likelihoods=[-1 * np.inf])
         return iter_fit, -1 * np.inf
@@ -449,4 +468,6 @@ def prep_data(data_filepath : str,**kwargs):
 
 
 if __name__ == '__main__':
-  fire.Fire(run)
+#   fire.Fire(run)
+    run(data_filepath="/data/dzeiberg/IGVF-cvfg-pillar-project/Pillar_project_data_files/individual_datasets/MSH2_Jia_2021.csv",
+          num_fits=10,core_limit=10,save_path="/data/dzeiberg/mave_calibration/test_results_10_22_24/")
