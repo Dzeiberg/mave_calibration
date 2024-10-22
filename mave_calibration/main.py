@@ -468,6 +468,4 @@ def prep_data(data_filepath : str,**kwargs):
 
 
 if __name__ == '__main__':
-#   fire.Fire(run)
-    run(data_filepath="/data/dzeiberg/IGVF-cvfg-pillar-project/Pillar_project_data_files/individual_datasets/MSH2_Jia_2021.csv",
-          num_fits=10,core_limit=10,save_path="/data/dzeiberg/mave_calibration/test_results_10_22_24/")
+  fire.Fire(run)
