@@ -384,7 +384,10 @@ def prep_data(data_filepath : str,**kwargs):
     """
     restarts = 0
     all_samples_represented = False
-    data = pd.read_csv(data_filepath).assign(labels=lambda x: x.labels.apply(literal_eval))
+    if data_filepath[-4:] == "json":
+        data = pd.read_json(data_filepath)
+    else:
+        data = pd.read_csv(data_filepath).assign(labels=lambda x: x.labels.apply(literal_eval))
     missing_data = data.auth_reported_score.isna() | data.labels.isna()
     if missing_data.sum() > 0:
         logging.warning(f"Missing data in {missing_data.sum()} observations")
