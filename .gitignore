@@ -3,3 +3,4 @@
 *.pdf
 *.lock
 examples/Findlay_BRCA1_SGE/results/
+nbs/
