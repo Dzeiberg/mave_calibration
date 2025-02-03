@@ -4,6 +4,7 @@ import numpy as np
 from scipy.stats import skewnorm, norm
 from scipy.special import logsumexp
 from copy import deepcopy
+from tqdm import tqdm
 
 class MulticomponentCalibrationModel:
     """
@@ -50,23 +51,32 @@ class MulticomponentCalibrationModel:
         # Initialize model parameters (i.e., skewness, locs, scales, sample_weights)
         self.initialize_parameters(scores, sampleIndicators, **kwargs)
         # run the EM algorithm to fit the model to the given assay scores and sample indicators
-        self._max_iter=kwargs.get("max_iter",100)
+        self._max_iter=kwargs.get("max_iter",1000)
         self._tol=kwargs.get('tol',1e-6)
         self._iter=0
         self._log_likelihoods = []
-        
+        self._update_log_likelihood(scores, sampleIndicators)
+        show_progress = kwargs.get("show_progress", True)
+        if show_progress:
+            pbar = tqdm(total=self._max_iter)
         while not self.converged:
+            if show_progress:
+                pbar.update(1)
+                pbar.set_description(f"Log-likelihood: {self._log_likelihoods[-1]:.7f}")
             if self.any_components_violate_monotonicity(scores):
                 raise ValueError(f"Model parameters violate monotonicity at start of iteration {self._iter:,d}.")
             self._fit_iter(scores, sampleIndicators, **kwargs)
             self._iter += 1
             self._update_log_likelihood(scores,sampleIndicators)
+        if show_progress:
+            pbar.close()
 
     @property
     def converged(self):
         return self._iter >= self._max_iter or \
             (self.check_convergence and len(self._log_likelihoods) > 1 and \
-             np.abs(self._log_likelihoods[-1] - self._log_likelihoods[-2]) < self._tol)
+             np.abs(self._log_likelihoods[-1] - self._log_likelihoods[-2]) < self._tol) or \
+             np.isinf(self._log_likelihoods[-1])
     
     def _update_log_likelihood(self, scores, sampleIndicators):
         """
@@ -85,7 +95,9 @@ class MulticomponentCalibrationModel:
         # step 2) update the parameters of each component
         component_posteriors = self.get_component_posteriors(scores, sampleIndicators)
         for component_num in range(self.num_components):
-            print(f"Updating component {component_num} parameters.")
+            self._current_component = component_num
+            if self.any_components_violate_monotonicity(sorted(np.unique(scores))):
+                raise ValueError(f"Model parameters violate monotonicity at start of component {component_num} iteration {self._iter:,d}.")
             self._update_component_parameters(scores, component_posteriors[:,component_num], component_num)
             if self.any_components_violate_monotonicity(sorted(np.unique(scores))):
                 raise ValueError(f"Updated component parameters for component {component_num} at iteration {self._iter} violate monotonicity.")
@@ -120,16 +132,6 @@ class MulticomponentCalibrationModel:
         # make sure the updated component parameters satisfy monotonicity
         if self.any_components_violate_monotonicity(sorted(np.unique(scores))):
             raise ValueError(f"Updated component parameters for component {component_num} at iteration {self._iter} violate monotonicity.")
-        if component_num == self.num_components - 1:
-            if MulticomponentCalibrationModel.parameters_violate_monotonicity(sorted(np.unique(scores)),
-                                                                              self.get_component_params(component_num - 1),
-                                                                              self.get_component_params(component_num)):
-                raise ValueError(f"Updated component parameters for component {component_num} violate monotonicity.")
-        else:
-            if MulticomponentCalibrationModel.parameters_violate_monotonicity(sorted(np.unique(scores)),
-                                                                              self.get_component_params(component_num),
-                                                                              self.get_component_params(component_num + 1)):
-                raise ValueError(f"Updated component parameters for component {component_num} violate monotonicity.")
 
     def _update_sample_weights(self, scores, sampleIndicators, **kwargs) -> None:
         """
@@ -189,16 +191,9 @@ class MulticomponentCalibrationModel:
         parameter_idx = 0 # index of the location parameter within the alternate parameterization
         location_candidate = self._propose_location_update(scores, component_posteriors, self.get_component_params(component_num))
         # get the last pair of component parameters for components component_num and component_num + 1 that satistfied monotonicity
-        updating_first_in_tuple = True
-        if component_num == self.num_components - 1:
-            last_params_canonical = [self.get_component_params(component_num - 1), self.get_component_params(component_num)]
+        last_params_canonical = [self.get_component_params(component_num) for component_num in range(self.num_components)]
             # assign the index of the component within the tuple to update
-            updating_first_in_tuple = False
-        else:
-            last_params_canonical = [self.get_component_params(component_num), self.get_component_params(component_num + 1)]
-            # assign the index of the component within the tuple to update
-        updated_location = self.binary_search(scores,location_candidate, last_params_canonical,
-                                                updating_first_in_tuple, parameter_idx)
+        updated_location = self.binary_search(scores,location_candidate, last_params_canonical, parameter_idx)
         
         self.updated_component_location = updated_location
 
@@ -296,24 +291,31 @@ class MulticomponentCalibrationModel:
         parameter_idx = 1 # index of the Delta parameter within the alternate parameterization
         Delta_candidate = self._propose_Delta_update(scores, component_posteriors, component_num)
         # Get the canonical parameterization for the last pair of component parameters that satisfied monotonicity
-        updating_first_in_tuple = True
-        if component_num == self.num_components - 1:
-            # component_num - 1 has been updated and satisfies monotonicity with current component_num params
-            # component_num has updated location parameter that satisfies monotonicity with current component_num - 1 params
-            # using component_num's updated location parameter, get the alternate parameterization
-            (_, D_k, G_k) = MulticomponentCalibrationModel.canonical_to_alternate(*self.get_component_params(component_num))
-            (skewness_k, loc_k, scale_k) = self.alternate_to_canonical(self.updated_component_location, D_k, G_k)
-            last_params_canonical = [self.get_component_params(component_num - 1), (skewness_k, loc_k, scale_k)]
-            updating_first_in_tuple = False
-        else:
-            # component_num has an updated location parameter that satisfies monotonicity with current component_num + 1 params
-            # component_num + 1 has not been updated
-            # using component_num's updated location parameter, get the alternate parameterization
-            (_, D_j, G_j) = MulticomponentCalibrationModel.canonical_to_alternate(*self.get_component_params(component_num))
-            (skewness_j, loc_j, scale_j) = self.alternate_to_canonical(self.updated_component_location, D_j, G_j)
-            last_params_canonical = [(skewness_j, loc_j, scale_j), self.get_component_params(component_num + 1)]
-        updated_Delta = self.binary_search(scores,Delta_candidate, last_params_canonical,
-                                            updating_first_in_tuple, parameter_idx)
+        # updating_first_in_tuple = True
+        # if component_num == self.num_components - 1:
+        #     # component_num - 1 has been updated and satisfies monotonicity with current component_num params
+        #     # component_num has updated location parameter that satisfies monotonicity with current component_num - 1 params
+        #     # using component_num's updated location parameter, get the alternate parameterization
+        #     (_, D_k, G_k) = MulticomponentCalibrationModel.canonical_to_alternate(*self.get_component_params(component_num))
+        #     (skewness_k, loc_k, scale_k) = self.alternate_to_canonical(self.updated_component_location, D_k, G_k)
+        #     last_params_canonical = [self.get_component_params(component_num - 1), (skewness_k, loc_k, scale_k)]
+        #     updating_first_in_tuple = False
+        # else:
+        #     # component_num has an updated location parameter that satisfies monotonicity with current component_num + 1 params
+        #     # component_num + 1 has not been updated
+        #     # using component_num's updated location parameter, get the alternate parameterization
+        #     (_, D_j, G_j) = MulticomponentCalibrationModel.canonical_to_alternate(*self.get_component_params(component_num))
+        #     (skewness_j, loc_j, scale_j) = self.alternate_to_canonical(self.updated_component_location, D_j, G_j)
+        #     last_params_canonical = [(skewness_j, loc_j, scale_j), self.get_component_params(component_num + 1)]
+        last_params_canonical = []
+        for i in range(self.num_components):
+            if i != component_num:
+                last_params_canonical.append(self.get_component_params(i))
+            else:
+                (_, D_i, G_i) = MulticomponentCalibrationModel.canonical_to_alternate(*self.get_component_params(i))
+                (skewness_i, loc_i, scale_i) = self.alternate_to_canonical(self.updated_component_location, D_i, G_i)
+                last_params_canonical.append((skewness_i, loc_i, scale_i))
+        updated_Delta = self.binary_search(scores,Delta_candidate, last_params_canonical, parameter_idx)
         self.updated_component_Delta = updated_Delta
 
     def _propose_Delta_update(self, scores, component_posteriors, component_num):
@@ -362,23 +364,32 @@ class MulticomponentCalibrationModel:
         """
         parameter_idx = 2 # index of the Gamma parameter within the alternate parameterization
         Gamma_candidate = self._propose_Gamma_update(scores, component_posteriors, component_num)
-        updating_first_in_tuple = True
-        if component_num == self.num_components - 1:
-            # component_num - 1 has been updated and satisfies monotonicity with current component_num params
-            # component_num has updated location and Delta parameters that satisfy monotonicity with current component_num - 1 params
-            (_, _, G_k) = MulticomponentCalibrationModel.canonical_to_alternate(*self.get_component_params(component_num))
-            # raise NotImplementedError("Need to update the above line")
-            (skewness_k, loc_k, scale_k) = self.alternate_to_canonical(self.updated_component_location, self.updated_component_Delta, G_k)
-            last_params_canonical = [self.get_component_params(component_num - 1), (skewness_k, loc_k, scale_k)]
-            updating_first_in_tuple = False
-        else:
-            # component_num has an updated location and Delta parameters that satisfy monotonicity with current component_num + 1 params
-            # component_num + 1 has not been updated
-            (_, _, G_j) = MulticomponentCalibrationModel.canonical_to_alternate(*self.get_component_params(component_num))
-            (skewness_j, loc_j, scale_j) = self.alternate_to_canonical(self.updated_component_location, self.updated_component_Delta, G_j)
-            last_params_canonical = [(skewness_j, loc_j, scale_j), self.get_component_params(component_num + 1)]
-        updated_Gamma = self.binary_search(scores,Gamma_candidate, last_params_canonical,
-                                            updating_first_in_tuple, parameter_idx)
+        # updating_first_in_tuple = True
+        # if component_num == self.num_components - 1:
+        #     # component_num - 1 has been updated and satisfies monotonicity with current component_num params
+        #     # component_num has updated location and Delta parameters that satisfy monotonicity with current component_num - 1 params
+        #     (_, _, G_k) = MulticomponentCalibrationModel.canonical_to_alternate(*self.get_component_params(component_num))
+        #     # raise NotImplementedError("Need to update the above line")
+        #     (skewness_k, loc_k, scale_k) = self.alternate_to_canonical(self.updated_component_location, self.updated_component_Delta, G_k)
+        #     last_params_canonical = [self.get_component_params(component_num - 1), (skewness_k, loc_k, scale_k)]
+        #     updating_first_in_tuple = False
+        # else:
+        #     # component_num has an updated location and Delta parameters that satisfy monotonicity with current component_num + 1 params
+        #     # component_num + 1 has not been updated
+        #     (_, _, G_j) = MulticomponentCalibrationModel.canonical_to_alternate(*self.get_component_params(component_num))
+        #     (skewness_j, loc_j, scale_j) = self.alternate_to_canonical(self.updated_component_location, self.updated_component_Delta, G_j)
+        #     last_params_canonical = [(skewness_j, loc_j, scale_j), self.get_component_params(component_num + 1)]
+        last_params_canonical = []
+        for i in range(self.num_components):
+            if i != component_num:
+                last_params_canonical.append(self.get_component_params(i))
+            else:
+                (_, _, G_i) = MulticomponentCalibrationModel.canonical_to_alternate(*self.get_component_params(i))
+                (skewness_i, loc_i, scale_i) = self.alternate_to_canonical(self.updated_component_location,
+                                                                           self.updated_component_Delta,
+                                                                           G_i)
+                last_params_canonical.append((skewness_i, loc_i, scale_i))
+        updated_Gamma = self.binary_search(scores,Gamma_candidate, last_params_canonical,parameter_idx)
         self.updated_component_Gamma = updated_Gamma
 
     def _propose_Gamma_update(self, scores, component_posteriors, component_num):
@@ -744,10 +755,16 @@ class MulticomponentCalibrationModel:
         """
         log_likelihood = 0.0
         for sampleNum, sampleIndices in self._groups_from_onehot(sampleIndicators).items():
+            if len(sampleIndices) == 0:
+                continue
             L = np.array([self.sample_weights[sampleNum,compNum] * self.get_component_density(scores[sampleIndices], compNum) \
-                          for compNum in range(self.num_components)]).sum(axis=0)
+                          for compNum in range(self.num_components) if self.sample_weights[sampleNum,compNum]]).sum(axis=0)
             LL = np.log(L).sum()
+            if np.isinf(LL):
+                raise ValueError("Log likelihood is -inf.")
             log_likelihood += LL
+        if np.isnan(log_likelihood) or np.isinf(log_likelihood):
+            raise ValueError("Log likelihood is NaN.")
         return log_likelihood
     
     def get_sample_cdf(self,scores, sampleNum):
@@ -804,7 +821,7 @@ class MulticomponentCalibrationModel:
         """
         u_scores = sorted(np.unique(scores))
         sample_cdf = self.get_sample_cdf(u_scores, sampleNum)
-        empirical_cdf = MulticomponentCalibrationModel.empirical_cdf(scores)
+        empirical_cdf = MulticomponentCalibrationModel.empirical_cdf(u_scores)
         cdf_distance = MulticomponentCalibrationModel.yang_dist(sample_cdf, empirical_cdf)
         return cdf_distance
 
@@ -853,8 +870,8 @@ class MulticomponentCalibrationModel:
         numpy.array
             Empirical cumulative distribution function of the scores.
         """
-        n_scores = scores.size
-        return np.arange(0,1, n_scores) + 1 / n_scores
+        n_scores = len(scores)
+        return np.arange(1,n_scores + 1) /  n_scores
 
     def get_component_posteriors(self, scores : np.array, sampleIndicators : np.array, **kwargs) -> np.array:
         """
@@ -1004,7 +1021,7 @@ class MulticomponentCalibrationModel:
         """
         pass
 
-    def binary_search(self,scores,candiate_value, previous_canonical_param_pair, updating_first_in_tuple, parameter_idx,**kwargs):
+    def binary_search(self,scores,candiate_value, previous_canonical_param_pair, parameter_idx,**kwargs):
         """
         Run binary search to find the parameter value that satisfies monotonicity.
 
@@ -1029,39 +1046,64 @@ class MulticomponentCalibrationModel:
         """
         unique_scores = np.unique(scores)
         unique_scores.sort()
-        # raise NotImplementedError("binary_search method must be implemented in a subclass.")
         # Get the alternate parameterization for the previous component parameters (i.e., location, Delta, Gamma)
-        assert not MulticomponentCalibrationModel.parameters_violate_monotonicity(unique_scores, *previous_canonical_param_pair)
+        if self._current_component != self.num_components - 1:
+            assert not MulticomponentCalibrationModel.parameters_violate_monotonicity(unique_scores,
+                                                                                    previous_canonical_param_pair[self._current_component],
+                                                                                    previous_canonical_param_pair[self._current_component + 1])
+        if self._current_component != 0:
+            assert not MulticomponentCalibrationModel.parameters_violate_monotonicity(unique_scores,
+                                                                                    previous_canonical_param_pair[self._current_component - 1],
+                                                                                    previous_canonical_param_pair[self._current_component])
         previous_alternate_param_pair = [list(self.canonical_to_alternate(*param)) for param in previous_canonical_param_pair]
         # Get the lower bound for the binary search, i.e., the previous parameter value
-        lower_bound = previous_alternate_param_pair[0][parameter_idx] if updating_first_in_tuple else previous_alternate_param_pair[1][parameter_idx]
+        lower_bound = previous_alternate_param_pair[self._current_component][parameter_idx]
         # Get the upper bound for the binary search, i.e., the candidate parameter value
         upper_bound = candiate_value
-        updated_params = [list(deepcopy(previous_alternate_param_pair[0])),
-                          list(deepcopy(previous_alternate_param_pair[1]))]
+        updated_params = [list(deepcopy(previous_alternate_param)) for previous_alternate_param in previous_alternate_param_pair]
         while abs(upper_bound - lower_bound) > self._tol:
             # Get the midpoint of the lower and upper bounds
             midpoint = (upper_bound + lower_bound) / 2
             # Update the parameter value in the alternate parameterization
-            if updating_first_in_tuple:
-                updated_params[0][parameter_idx] = midpoint
+            updated_params[self._current_component][parameter_idx] = midpoint
+            # if updating the first component, check monotonicity with the second component
+            if self._current_component == 0:
+                if MulticomponentCalibrationModel.parameters_violate_monotonicity(unique_scores,
+                    self.alternate_to_canonical(*updated_params[0]),
+                    self.alternate_to_canonical(*updated_params[1])
+                ):
+                    # midpoint violates monotonicity, reduce the upper bound
+                    upper_bound = midpoint
+                else:
+                    # Otherwise, increase the lower bound
+                    lower_bound = midpoint
+            # if checking monotonicity with the last component, check monotonicity with the second-to-last component
+            elif self._current_component == self.num_components - 1:
+                if MulticomponentCalibrationModel.parameters_violate_monotonicity(unique_scores,
+                    self.alternate_to_canonical(*updated_params[self._current_component - 1]),
+                    self.alternate_to_canonical(*updated_params[self._current_component])
+                ):
+                    # midpoint violates monotonicity, reduce the upper bound
+                    upper_bound = midpoint
+                else:
+                    # Otherwise, increase the lower bound
+                    lower_bound = midpoint
+            # otherwise, check monotonicity with the previous and next components
             else:
-                updated_params[1][parameter_idx] = midpoint
-            if MulticomponentCalibrationModel.parameters_violate_monotonicity(unique_scores,
-                self.alternate_to_canonical(*updated_params[0]),
-                self.alternate_to_canonical(*updated_params[1])
-            ):
-                # If the updated parameter value violates monotonicity, update the upper bound
-                upper_bound = midpoint
-            else:
-                # Otherwise, update the lower bound
-                lower_bound = midpoint
-        # updated_params = [self.alternate_to_canonical(*param) for param in updated_params]
-        if updating_first_in_tuple:
-            updated_params[0][parameter_idx] = lower_bound
-        else:
-            updated_params[1][parameter_idx] = lower_bound
-        assert not MulticomponentCalibrationModel.parameters_violate_monotonicity(unique_scores,
-                                                                                    self.alternate_to_canonical(*updated_params[0]),
-                                                                                    self.alternate_to_canonical(*updated_params[1]))
+                if MulticomponentCalibrationModel.parameters_violate_monotonicity(unique_scores,
+                    self.alternate_to_canonical(*updated_params[self._current_component - 1]),
+                    self.alternate_to_canonical(*updated_params[self._current_component])) or \
+                    MulticomponentCalibrationModel.parameters_violate_monotonicity(unique_scores,
+                    self.alternate_to_canonical(*updated_params[self._current_component]),
+                    self.alternate_to_canonical(*updated_params[self._current_component + 1])):
+                    # midpoint violates monotonicity, reduce the upper bound
+                    upper_bound = midpoint
+                else:
+                    # Otherwise, increase the lower bound
+                    lower_bound = midpoint
+        updated_params[self._current_component][parameter_idx] = lower_bound
+        for compI, compJ in zip(range(self.num_components - 1), range(1, self.num_components)):
+            assert not MulticomponentCalibrationModel.parameters_violate_monotonicity(unique_scores,
+                                                                                        self.alternate_to_canonical(*updated_params[compI]),
+                                                                                        self.alternate_to_canonical(*updated_params[compJ]))
         return lower_bound
