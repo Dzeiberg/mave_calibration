@@ -296,6 +296,12 @@ def downsample(observations, sample_indicators, proportion):
     downsampled_sample_indicators = sample_indicators[indices]
     return downsampled_observations, downsampled_sample_indicators, indices
 
+def tryToFit(observations, sample_indicators, **kwargs):
+    try:
+        fit_res = runFitIteration(observations, sample_indicators, **kwargs)
+        return fit_res
+    except (AssertionError,ValueError):
+        return (None, -1 * np.inf)
 def run(data_filepath, **kwargs) -> Fit:
     """
     Fit the multi-sample skew normal mixture model to the data
